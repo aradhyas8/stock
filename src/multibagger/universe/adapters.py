@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import pandas as pd
-import requests
 
+from multibagger.common.http import create_http_session, retry_with_backoff
 from multibagger.config import Config
 from multibagger.data.cache import HttpCache
 
@@ -37,14 +37,13 @@ class UniverseAdapter(ABC):
     def __init__(self, config: Config, cache: HttpCache):
         self.config = config
         self.cache = cache
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": config.data.get("sources", {})
-                .get("yahoo", {})
-                .get("user_agent", "MultiBagger/1.0")
-            }
+        # Use shared HTTP session with retry logic
+        user_agent = (
+            config.data.get("sources", {})
+            .get("yahoo", {})
+            .get("user_agent", "MultiBagger/1.0")
         )
+        self.session = create_http_session(user_agent=user_agent)
 
     @abstractmethod
     def fetch_universe(self) -> list[UniverseEntry]:
@@ -56,12 +55,33 @@ class UniverseAdapter(ABC):
         """Return list of exchange codes this adapter handles"""
         pass
 
-    def _make_request(self, url: str, ttl_days: int = 1) -> str | None:
-        """Make HTTP request with caching"""
-        try:
-            response = self.session.get(url, timeout=30)
+    def _make_request(
+        self, url: str, ttl_days: int = 1, force_refresh: bool = False
+    ) -> str | None:
+        """
+        Make HTTP request with caching and retry logic.
+
+        Uses shared utilities for consistent behavior.
+        """
+        # Check cache first
+        if not force_refresh:
+            cached_data, from_cache = self.cache.get(url, ttl_days=ttl_days)
+            if from_cache:
+                logger.debug(f"Cache hit for {url[:80]}")
+                return cached_data
+
+        # Network fetch with retry
+        def fetch():
+            response = self.session.get(url, timeout=self.session.timeout)  # type: ignore
             response.raise_for_status()
             return response.text
+
+        try:
+            data = retry_with_backoff(fetch, max_attempts=3)
+            # Cache the result
+            if data:
+                self.cache.put(url, data, ttl_days=ttl_days)
+            return data
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {e}")
             return None
