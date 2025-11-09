@@ -1,0 +1,169 @@
+# Multi-Bagger Research System Configuration
+# Copy this file to config.yml and customize for your environment
+
+# Market Configuration
+markets:
+  - US          # NYSE, NASDAQ
+  - INDIA       # NSE, BSE (future)
+
+# Universe Settings
+universe:
+  size_target: 5000                    # Total stocks to analyze
+  min_market_cap: 100_000_000         # $100M minimum
+  min_daily_volume: 100_000           # 100K shares minimum
+  min_price: 5.00                     # $5 minimum price
+  exclude_otc: true                   # Exclude OTC/Pink Sheet stocks
+  exclude_adrs: true                  # Exclude ADRs initially
+
+# Data Sources (API Configuration)
+data_sources:
+  primary: YAHOO                      # Yahoo Finance (free)
+  backup: ALPHA_VANTAGE              # Alpha Vantage (free tier)
+  fundamental: FMP                    # Financial Modeling Prep
+
+# API Rate Limits (requests per minute)
+rate_limits:
+  yahoo: 2000                        # No official limit, be conservative
+  alpha_vantage: 5                   # Free tier: 5/min, 500/day
+  fmp: 250                           # Free tier: 250/day
+
+# Data Layer Configuration
+data:
+  # Cache settings
+  cache:
+    backend: SQLITE                  # SQLITE or REDIS
+    sqlite_path: "data/http_cache.db"
+    redis_url: "redis://localhost:6379/0"
+    in_memory_hot_cache: true        # Keep recent entries in memory
+    hot_cache_size: 1000             # Max entries in memory
+
+  # TTL policies (days)
+  ttl:
+    price: 1                         # Price data: 1 day
+    fundamental: 90                  # Fundamentals: 90 days
+    instrument: 30                   # Instrument metadata: 30 days
+    filing: 365                      # SEC filings: 1 year
+
+  # Data sources configuration
+  sources:
+    yahoo:
+      enabled: true
+      rate_limit_per_minute: 2000
+      user_agent: "MultiBagger/1.0"
+      timeout_seconds: 30
+    alpha_vantage:
+      enabled: false
+      rate_limit_per_minute: 5
+      api_key: "${ALPHA_VANTAGE_KEY}"
+      timeout_seconds: 30
+    edgar:
+      enabled: true
+      rate_limit_per_minute: 10
+      user_agent: "MultiBagger/1.0 (contact@example.com)"
+      timeout_seconds: 30
+    screener_in:
+      enabled: false
+      rate_limit_per_minute: 60
+      timeout_seconds: 30
+
+  # Batching and concurrency
+  batching:
+    max_concurrent_requests: 5
+    batch_size: 50
+    retry_attempts: 3
+    retry_backoff_seconds: 1
+    jitter: true
+
+  # Operational settings
+  cache_only_mode: false             # Use cache only, no network calls
+  deterministic_mode: true           # Pin timestamps for reproducible runs
+
+# Caching Configuration
+cache:
+  backend: FILE                      # FILE or REDIS
+  redis_url: "redis://localhost:6379/0"
+  ttl:
+    price_data: 86400               # 1 day (seconds)
+    fundamental_data: 2592000       # 30 days
+    universe_data: 604800           # 7 days
+
+# Database Configuration
+database:
+  url: "sqlite:///data/multibagger.db"
+  echo: false                       # Set to true for SQL debugging
+  pool_size: 5
+  max_overflow: 10
+
+# Screening Configuration  
+screening:
+  stages:
+    quick_filter: 500               # Stage 1: 5000 → 500 stocks
+    quality_filter: 100             # Stage 2: 500 → 100 stocks  
+    business_filter: 30             # Stage 3: 100 → 30 stocks
+    red_flag_filter: 15             # Stage 4: 30 → 15 stocks
+
+  # Factor weights (equal initially)
+  factor_weights:
+    profitability: 0.25             # ROE, ROCE, ROIC
+    growth: 0.25                    # Revenue/earnings growth
+    quality: 0.25                   # Debt ratios, consistency
+    valuation: 0.25                 # P/E, EV/EBITDA relative
+
+# Red Flag Thresholds
+red_flags:
+  beneish_mscore: -1.78             # Above = manipulation risk
+  altman_zscore: 1.8                # Below = bankruptcy risk
+  piotroski_fscore: 7               # Below = weak fundamentals
+  max_red_flags: 2                  # Auto-eliminate if exceeded
+
+# Portfolio Configuration
+portfolio:
+  max_positions: 7                  # Maximum concurrent holdings
+  position_sizing:
+    high_conviction: 0.20           # 20% for score > 90
+    medium_conviction: 0.15         # 15% for score 80-90
+    low_conviction: 0.10            # 10% for score < 80
+  rebalance_threshold: 0.05         # 5% weight drift triggers rebalance
+
+# Reporting Configuration
+reports:
+  output_format: PDF                # PDF, HTML, or BOTH
+  template_dir: "templates/"
+  output_dir: "reports/"
+  include_charts: true
+  max_report_pages: 10
+
+# Monitoring Configuration
+monitoring:
+  alert_thresholds:
+    stop_loss: -0.25                # 25% decline alert
+    target_approach: 0.90           # 90% of target price alert
+    volume_spike: 3.0               # 3x average volume alert
+  
+  check_frequency: "daily"          # daily, hourly
+  news_sources:
+    - "yahoo_finance"
+    - "reuters"
+    - "bloomberg"                   # If API available
+
+# Execution Configuration
+execution:
+  monthly_run_day: 1                # 1st day of month
+  max_runtime_minutes: 60           # Kill job after 1 hour
+  parallel_workers: 4               # For data fetching
+  chunk_size: 100                   # Stocks per batch
+
+# Logging Configuration
+logging:
+  level: INFO                       # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/multibagger.log"
+  max_file_size: 10485760          # 10MB
+  backup_count: 5
+  
+# Development Configuration
+dev:
+  debug_mode: false
+  sample_mode: false                # Use small sample for testing
+  sample_size: 50                   # Stocks in sample mode
+  skip_cache: false                 # Force fresh API calls
