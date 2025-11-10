@@ -356,6 +356,121 @@ def populate_survivors(
 
 
 @app.command()
+def backfill_forensics(
+    as_of: str = typer.Option(..., "--as-of", help="As-of month (YYYY-MM)"),
+    csv_path: str = typer.Option(None, "--csv", help="Custom CSV path (default: auto-detect from as-of)"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", help="Output directory for coverage report")
+) -> None:
+    """
+    Backfill forensics fields for screening survivors using yfinance + Alpha Vantage fallback.
+
+    This command:
+    1. Loads survivors from stage_business_<as-of>.csv
+    2. Fetches fundamentals from yfinance (fast)
+    3. Falls back to Alpha Vantage for missing forensics fields (rate-limited)
+    4. UPSERTs to fundamentals table
+    5. Generates coverage report JSON
+
+    Example:
+        multibagger data backfill-forensics --as-of 2025-11
+    """
+    import json
+    from pathlib import Path
+    import os
+
+    console.print(f"\n[bold blue]🔄 Backfilling Forensics Fields for {as_of}[/bold blue]\n")
+
+    # Determine CSV path
+    if csv_path is None:
+        csv_path = f"{output_dir}/{as_of}/stage_business_{as_of}.csv"
+
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        console.print(f"[red]❌ CSV file not found: {csv_path}[/red]")
+        console.print(f"[yellow]Run 'multibagger screen business --as-of {as_of}' first[/yellow]")
+        raise typer.Exit(1)
+
+    # Check for Alpha Vantage API key
+    if not os.getenv('ALPHA_VANTAGE_KEY'):
+        console.print("[yellow]⚠️  ALPHA_VANTAGE_KEY not set - fallback disabled[/yellow]")
+        console.print("[yellow]Set ALPHA_VANTAGE_KEY in .env to enable Alpha Vantage fallback[/yellow]")
+        console.print("[yellow]Continuing with yfinance only...[/yellow]\n")
+
+    try:
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population with fallback
+        stats = populator.populate_from_survivors_csv(
+            csv_path=str(csv_file),
+            stage_name=f"Stage 2.3 Business Filter ({as_of})"
+        )
+
+        # Generate coverage report
+        report_dir = Path(output_dir) / as_of
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / "forensics_coverage.json"
+
+        # Calculate overall coverage
+        field_coverage = stats.get('field_coverage', {})
+        total_by_field = {}
+        overall_totals = {'with_data': 0, 'total_fields': 0}
+
+        for field_name, counts in field_coverage.items():
+            total = counts.get('yfinance', 0) + counts.get('alpha_vantage', 0) + counts.get('missing', 0)
+            with_data = counts.get('yfinance', 0) + counts.get('alpha_vantage', 0)
+            coverage_pct = (with_data / total * 100) if total > 0 else 0
+
+            total_by_field[field_name] = {
+                'yfinance': counts.get('yfinance', 0),
+                'alpha_vantage': counts.get('alpha_vantage', 0),
+                'missing': counts.get('missing', 0),
+                'coverage_pct': round(coverage_pct, 1)
+            }
+
+            overall_totals['with_data'] += with_data
+            overall_totals['total_fields'] += total
+
+        overall_coverage_pct = (
+            (overall_totals['with_data'] / overall_totals['total_fields'] * 100)
+            if overall_totals['total_fields'] > 0 else 0
+        )
+
+        # Build coverage report
+        coverage_report = {
+            'as_of': as_of,
+            'timestamp': datetime.utcnow().isoformat(),
+            'csv_path': str(csv_file),
+            'field_coverage': total_by_field,
+            'overall_coverage_pct': round(overall_coverage_pct, 1),
+            'fundamentals_fetched': stats.get('fundamentals_fetched', 0),
+            'fundamentals_inserted': stats.get('fundamentals_inserted', 0)
+        }
+
+        # Add AV stats if available
+        if populator.av_adapter and hasattr(populator.av_adapter, 'stats'):
+            coverage_report['alpha_vantage_stats'] = populator.av_adapter.stats.copy()
+
+        # Write JSON report
+        with open(report_path, 'w') as f:
+            json.dump(coverage_report, f, indent=2)
+
+        console.print(f"\n[green]✅ Coverage report saved to {report_path}[/green]")
+
+        # Print summary
+        console.print(f"\n[bold cyan]📊 Overall Forensics Coverage: {overall_coverage_pct:.1f}%[/bold cyan]")
+
+        if overall_coverage_pct >= 90:
+            console.print("[green]✅ Target coverage (≥90%) achieved![/green]")
+        else:
+            console.print(f"[yellow]⚠️  Coverage below 90% target ({overall_coverage_pct:.1f}%)[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Backfill failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
 def validate() -> None:
     """Validate data coverage and quality"""
     console.print("[blue]🔍 Validating Data Coverage[/blue]")

@@ -1,6 +1,7 @@
 """Data population orchestration for populating DB with real market data"""
 
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 
@@ -14,8 +15,10 @@ from sqlalchemy.orm import Session
 from multibagger.config import Config
 from multibagger.database.models import Ticker, Price, Fundamental, Factor
 from multibagger.database.schema import get_engine
+from multibagger.data.cache import HttpCache
 
 from .adapters.yfinance_adapter import YFinanceAdapter
+from .adapters.alpha_vantage_adapter import AlphaVantageAdapter
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -29,6 +32,21 @@ class DataPopulator:
         self.engine = get_engine()
         self.adapter = YFinanceAdapter(batch_size=50, delay_seconds=1.0)
 
+        # Initialize Alpha Vantage adapter if API key is available
+        av_api_key = os.getenv('ALPHA_VANTAGE_KEY')
+        if av_api_key:
+            cache = HttpCache()  # Uses default DB path from get_engine()
+            self.av_adapter = AlphaVantageAdapter(
+                api_key=av_api_key,
+                cache=cache,
+                min_call_interval=12,  # Conservative for free tier (5 calls/min)
+                ttl_days=90
+            )
+            logger.info("✓ Alpha Vantage adapter initialized with 90d cache TTL")
+        else:
+            self.av_adapter = None
+            logger.warning("ALPHA_VANTAGE_KEY not set - fallback disabled")
+
         self.stats = {
             'prices_fetched': 0,
             'prices_inserted': 0,
@@ -38,6 +56,12 @@ class DataPopulator:
             'errors': [],
             'start_time': None,
             'end_time': None,
+            # Field coverage tracking for Phase 3.5
+            'field_coverage': {
+                field: {'yfinance': 0, 'alpha_vantage': 0, 'missing': 0}
+                for field in ['receivables', 'ppe', 'depreciation', 'sga_expense',
+                              'cash', 'short_term_debt', 'retained_earnings']
+            }
         }
 
     def populate_all(self, sample_mode: bool = False, sample_size: int = 50) -> dict:
@@ -317,11 +341,12 @@ class DataPopulator:
         console.print(f"✅ Fundamentals: {success_count}/{len(tickers)} tickers fetched")
 
     def _insert_fundamentals(self, ticker: dict, data: dict) -> bool:
-        """Insert fundamentals for a single ticker"""
+        """Insert fundamentals for a single ticker with Alpha Vantage fallback"""
         if all(df.empty for df in data.values()):
             return False
 
         ticker_id = ticker['id']
+        symbol = ticker['symbol']
 
         with Session(self.engine) as session:
             try:
@@ -334,29 +359,44 @@ class DataPopulator:
                     balance = data['balance_sheet'][period_end] if not data['balance_sheet'].empty else pd.Series()
                     cashflow = data['cashflow'][period_end] if not data['cashflow'].empty else pd.Series()
 
-                    # Extract forensics fields (Phase 3)
-                    receivables = self._extract_field(balance, [
-                        'Receivables', 'Accounts Receivable', 'Total Receivables Net'
-                    ])
-                    ppe = self._extract_field(balance, [
-                        'Net PPE', 'Property Plant Equipment Net', 'Property Plant And Equipment Net'
-                    ])
-                    depreciation = self._extract_field(cashflow, [
-                        'Depreciation And Amortization', 'Depreciation', 'Depreciation Amortization Depletion'
-                    ])
-                    sga_expense = self._extract_field(financials, [
-                        'Selling General And Administrative', 'Operating Expense', 'Selling And Marketing Expense'
-                    ])
-                    cash = self._extract_field(balance, [
-                        'Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments',
-                        'Cash', 'Cash And Short Term Investments'
-                    ])
-                    short_term_debt = self._extract_field(balance, [
-                        'Current Debt', 'Short Long Term Debt', 'Short Term Debt'
-                    ])
-                    retained_earnings = self._extract_field(balance, [
-                        'Retained Earnings'
-                    ])
+                    # Extract forensics fields from yfinance (Phase 3)
+                    forensics_fields = {
+                        'receivables': self._extract_field(balance, [
+                            'Receivables', 'Accounts Receivable', 'Total Receivables Net'
+                        ]),
+                        'ppe': self._extract_field(balance, [
+                            'Net PPE', 'Property Plant Equipment Net', 'Property Plant And Equipment Net'
+                        ]),
+                        'depreciation': self._extract_field(cashflow, [
+                            'Depreciation And Amortization', 'Depreciation', 'Depreciation Amortization Depletion'
+                        ]),
+                        'sga_expense': self._extract_field(financials, [
+                            'Selling General And Administrative', 'Operating Expense', 'Selling And Marketing Expense'
+                        ]),
+                        'cash': self._extract_field(balance, [
+                            'Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments',
+                            'Cash', 'Cash And Short Term Investments'
+                        ]),
+                        'short_term_debt': self._extract_field(balance, [
+                            'Current Debt', 'Short Long Term Debt', 'Short Term Debt'
+                        ]),
+                        'retained_earnings': self._extract_field(balance, [
+                            'Retained Earnings'
+                        ])
+                    }
+
+                    # Phase 3.5: Try Alpha Vantage fallback for NULL fields
+                    if self.av_adapter:
+                        fields_with_source = self._fallback_to_alpha_vantage(
+                            symbol, forensics_fields, period_end.year
+                        )
+                        # Track field coverage for statistics
+                        self._update_field_coverage_stats(fields_with_source)
+                        # Extract values only (discard source for DB insert)
+                        forensics_values = {k: v[0] for k, v in fields_with_source.items()}
+                    else:
+                        # No AV adapter, use yfinance values as-is
+                        forensics_values = forensics_fields
 
                     # Check if exists
                     existing = session.execute(
@@ -380,13 +420,13 @@ class DataPopulator:
                                 WHERE ticker_id = :tid AND period_end = :pd
                             """),
                             {
-                                'receivables': receivables,
-                                'ppe': ppe,
-                                'depreciation': depreciation,
-                                'sga_expense': sga_expense,
-                                'cash': cash,
-                                'short_term_debt': short_term_debt,
-                                'retained_earnings': retained_earnings,
+                                'receivables': forensics_values['receivables'],
+                                'ppe': forensics_values['ppe'],
+                                'depreciation': forensics_values['depreciation'],
+                                'sga_expense': forensics_values['sga_expense'],
+                                'cash': forensics_values['cash'],
+                                'short_term_debt': forensics_values['short_term_debt'],
+                                'retained_earnings': forensics_values['retained_earnings'],
                                 'tid': ticker_id,
                                 'pd': period_end.date()
                             }
@@ -414,14 +454,14 @@ class DataPopulator:
                             # Cash flow
                             operating_cash_flow=self._safe_float(cashflow.get('Operating Cash Flow')),
                             free_cash_flow=self._safe_float(cashflow.get('Free Cash Flow')),
-                            # Forensics fields (Phase 3)
-                            receivables=receivables,
-                            ppe=ppe,
-                            depreciation=depreciation,
-                            sga_expense=sga_expense,
-                            cash=cash,
-                            short_term_debt=short_term_debt,
-                            retained_earnings=retained_earnings,
+                            # Forensics fields (Phase 3.5 with AV fallback)
+                            receivables=forensics_values['receivables'],
+                            ppe=forensics_values['ppe'],
+                            depreciation=forensics_values['depreciation'],
+                            sga_expense=forensics_values['sga_expense'],
+                            cash=forensics_values['cash'],
+                            short_term_debt=forensics_values['short_term_debt'],
+                            retained_earnings=forensics_values['retained_earnings'],
                         )
 
                         session.add(fundamental)
@@ -548,6 +588,64 @@ class DataPopulator:
             logger.error(f"Factor calculation failed for ticker {ticker_id}: {e}")
             return None
 
+    def _fallback_to_alpha_vantage(
+        self,
+        symbol: str,
+        forensics_fields: dict[str, float | None],
+        fiscal_year: int
+    ) -> dict[str, tuple[float | None, str]]:
+        """
+        Try Alpha Vantage fallback for NULL forensics fields.
+
+        Args:
+            symbol: Stock ticker symbol
+            forensics_fields: Dict of field_name -> value from yfinance
+            fiscal_year: Fiscal year to extract
+
+        Returns:
+            Dict of field_name -> (value, source) where source is 'yfinance', 'alpha_vantage', or 'missing'
+        """
+        # Convert to provenance-tracked format
+        fields_with_source = {
+            field: (value, 'yfinance' if value is not None else 'missing')
+            for field, value in forensics_fields.items()
+        }
+
+        # Identify which fields need fallback
+        null_fields = [field for field, (value, _) in fields_with_source.items() if value is None]
+
+        if not null_fields:
+            return fields_with_source  # All fields populated by yfinance
+
+        try:
+            # Fetch fundamentals from AV (cached with 90d TTL)
+            av_data = self.av_adapter.fetch_fundamentals(symbol, years=5)
+
+            # Extract each NULL field
+            for field_name in null_fields:
+                field_values = self.av_adapter.extract_field(av_data, field_name, fiscal_year)
+
+                if field_values and fiscal_year in field_values:
+                    fields_with_source[field_name] = (field_values[fiscal_year], 'alpha_vantage')
+                    logger.debug(f"✓ AV filled {field_name} for {symbol} FY{fiscal_year}")
+
+        except Exception as e:
+            logger.warning(f"AV fallback failed for {symbol}: {e}")
+            self.av_adapter.stats['errors'] += 1
+
+        return fields_with_source
+
+    def _update_field_coverage_stats(self, fields_with_source: dict[str, tuple[float | None, str]]):
+        """
+        Update field coverage statistics with source tracking.
+
+        Args:
+            fields_with_source: Dict of field_name -> (value, source)
+        """
+        for field_name, (value, source) in fields_with_source.items():
+            if source in ['yfinance', 'alpha_vantage', 'missing']:
+                self.stats['field_coverage'][field_name][source] += 1
+
     def _safe_float(self, value) -> float | None:
         """Safely convert value to float"""
         if value is None or pd.isna(value):
@@ -576,7 +674,7 @@ class DataPopulator:
         return None
 
     def _print_summary(self):
-        """Print population summary"""
+        """Print population summary with field coverage statistics"""
         runtime = (self.stats['end_time'] - self.stats['start_time']).total_seconds()
 
         table = Table(title="Data Population Summary")
@@ -593,6 +691,48 @@ class DataPopulator:
 
         console.print("\n")
         console.print(table)
+
+        # Phase 3.5: Print field coverage statistics if AV adapter was used
+        if self.av_adapter:
+            console.print("\n[bold cyan]📊 Forensics Field Coverage (Phase 3.5)[/bold cyan]")
+
+            coverage_table = Table()
+            coverage_table.add_column("Field", style="cyan")
+            coverage_table.add_column("yfinance", style="green")
+            coverage_table.add_column("Alpha Vantage", style="yellow")
+            coverage_table.add_column("Missing", style="red")
+            coverage_table.add_column("Coverage %", style="magenta")
+
+            for field_name, counts in self.stats['field_coverage'].items():
+                total = counts['yfinance'] + counts['alpha_vantage'] + counts['missing']
+                if total > 0:
+                    coverage_pct = ((counts['yfinance'] + counts['alpha_vantage']) / total) * 100
+                else:
+                    coverage_pct = 0.0
+
+                coverage_table.add_row(
+                    field_name,
+                    str(counts['yfinance']),
+                    str(counts['alpha_vantage']),
+                    str(counts['missing']),
+                    f"{coverage_pct:.1f}%"
+                )
+
+            console.print(coverage_table)
+
+            # Print AV adapter statistics
+            if hasattr(self.av_adapter, 'stats'):
+                console.print("\n[bold cyan]🔄 Alpha Vantage API Statistics[/bold cyan]")
+                av_stats_table = Table()
+                av_stats_table.add_column("Metric", style="cyan")
+                av_stats_table.add_column("Count", style="green")
+
+                av_stats_table.add_row("API Calls", str(self.av_adapter.stats['api_calls']))
+                av_stats_table.add_row("Cache Hits", str(self.av_adapter.stats['cache_hits']))
+                av_stats_table.add_row("Rate Limit Sleeps", str(self.av_adapter.stats['rate_limit_sleeps']))
+                av_stats_table.add_row("Errors", str(self.av_adapter.stats['errors']))
+
+                console.print(av_stats_table)
 
         if self.stats['errors']:
             console.print(f"\n[yellow]⚠️  {len(self.stats['errors'])} errors occurred (see logs)[/yellow]")
