@@ -309,6 +309,53 @@ def populate(
 
 
 @app.command()
+def populate_survivors(
+    csv_path: str = typer.Argument(..., help="Path to screening stage CSV"),
+    stage_name: str = typer.Option(
+        "Screening Stage", "--stage-name", help="Stage name for logging"
+    ),
+) -> None:
+    """
+    Populate fundamentals/factors for survivors from a screening CSV.
+
+    This enables survivors-driven data fetching where we only update
+    data for tickers that passed a screening stage.
+
+    Example:
+        multibagger data populate-survivors snapshots/2025-11/stage_business_2025-11.csv --stage-name "Stage 2.3"
+    """
+    console.print(f"[blue]📦 Populating Data for Survivors[/blue]")
+
+    try:
+        # Validate CSV path
+        csv_file = Path(csv_path)
+        if not csv_file.exists():
+            console.print(f"[red]❌ CSV file not found: {csv_path}[/red]")
+            raise typer.Exit(1)
+
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population for survivors
+        stats = populator.populate_from_survivors_csv(
+            csv_path=str(csv_file),
+            stage_name=stage_name
+        )
+
+        if stats.get('errors') and len(stats['errors']) > 5:
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} errors[/yellow]")
+            raise typer.Exit(1)
+        elif stats.get('errors'):
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} minor errors[/yellow]")
+        else:
+            console.print("\n[green]✅ Data population complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Population failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
 def validate() -> None:
     """Validate data coverage and quality"""
     console.print("[blue]🔍 Validating Data Coverage[/blue]")

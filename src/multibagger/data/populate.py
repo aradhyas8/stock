@@ -87,6 +87,67 @@ class DataPopulator:
 
         return self.stats
 
+    def populate_from_survivors_csv(
+        self,
+        csv_path: str,
+        stage_name: str = "Screening Stage"
+    ) -> dict:
+        """
+        Populate fundamentals and factors for survivors from a screening CSV.
+
+        This method enables survivors-driven data fetching, where we only
+        fetch/update data for tickers that passed a screening stage.
+
+        Args:
+            csv_path: Path to screening stage CSV (e.g., snapshots/2025-11/stage_business_2025-11.csv)
+            stage_name: Stage name for logging
+
+        Returns:
+            Statistics dictionary
+
+        Example:
+            >>> populator.populate_from_survivors_csv(
+            ...     'snapshots/2025-11/stage_business_2025-11.csv',
+            ...     stage_name='Stage 2.3 Business Filter'
+            ... )
+        """
+        self.stats['start_time'] = datetime.utcnow()
+
+        console.print(f"\n[bold blue]🚀 Populating Data for {stage_name} Survivors[/bold blue]\n")
+
+        # Load survivors CSV
+        try:
+            survivors_df = pd.read_csv(csv_path)
+            ticker_ids = survivors_df['ticker_id'].tolist()
+            console.print(f"📊 Loaded {len(ticker_ids)} survivors from {csv_path}")
+        except Exception as e:
+            console.print(f"[red]Failed to load CSV: {e}[/red]")
+            return self.stats
+
+        # Get ticker details from database
+        tickers = self._get_tickers_by_ids(ticker_ids)
+
+        if not tickers:
+            console.print("[red]No matching tickers found in database[/red]")
+            return self.stats
+
+        console.print(f"✅ Found {len(tickers)}/{len(ticker_ids)} tickers in database")
+
+        # Populate fundamentals
+        console.print(f"\n[cyan]Step 1: Fetching Fundamentals[/cyan]")
+        self._populate_fundamentals(tickers)
+
+        # Compute factors
+        console.print(f"\n[cyan]Step 2: Computing Factors[/cyan]")
+        self._compute_factors(tickers)
+
+        self.stats['end_time'] = datetime.utcnow()
+
+        # Print summary
+        self._print_summary()
+
+        return self.stats
+
     def _get_tickers(self, limit: int | None = None) -> list[dict]:
         """Get tickers from database"""
         with Session(self.engine) as session:
@@ -103,6 +164,33 @@ class DataPopulator:
                 result = session.execute(query, {'limit': limit})
             else:
                 result = session.execute(query)
+
+            tickers = [
+                {'id': row[0], 'symbol': row[1], 'exchange': row[2]}
+                for row in result.fetchall()
+            ]
+
+            return tickers
+
+    def _get_tickers_by_ids(self, ticker_ids: list[int]) -> list[dict]:
+        """Get tickers by ID list"""
+        if not ticker_ids:
+            return []
+
+        with Session(self.engine) as session:
+            # Build placeholders for IN clause
+            placeholders = ','.join([f":id{i}" for i in range(len(ticker_ids))])
+            params = {f"id{i}": tid for i, tid in enumerate(ticker_ids)}
+
+            query = text(f"""
+                SELECT t.id, t.symbol, e.code as exchange_code
+                FROM tickers t
+                INNER JOIN exchanges e ON t.exchange_id = e.id
+                WHERE t.id IN ({placeholders})
+                ORDER BY t.id
+            """)
+
+            result = session.execute(query, params)
 
             tickers = [
                 {'id': row[0], 'symbol': row[1], 'exchange': row[2]}
@@ -241,44 +329,103 @@ class DataPopulator:
                 years = data['financials'].columns if not data['financials'].empty else []
 
                 for period_end in years:
-                    # Check if exists
-                    existing = session.execute(
-                        text("SELECT 1 FROM fundamentals WHERE ticker_id = :tid AND period_end = :pd"),
-                        {'tid': ticker_id, 'pd': period_end.date()}
-                    ).first()
-
-                    if existing:
-                        continue
-
-                    # Extract metrics
+                    # Extract metrics first
                     financials = data['financials'][period_end] if not data['financials'].empty else pd.Series()
                     balance = data['balance_sheet'][period_end] if not data['balance_sheet'].empty else pd.Series()
                     cashflow = data['cashflow'][period_end] if not data['cashflow'].empty else pd.Series()
 
-                    fundamental = Fundamental(
-                        ticker_id=ticker_id,
-                        period_end=period_end.date(),
-                        report_type='A',
-                        fiscal_year=period_end.year,
-                        # Income statement
-                        revenue=self._safe_float(financials.get('Total Revenue')),
-                        gross_profit=self._safe_float(financials.get('Gross Profit')),
-                        operating_income=self._safe_float(financials.get('Operating Income')),
-                        net_income=self._safe_float(financials.get('Net Income')),
-                        ebitda=self._safe_float(financials.get('EBITDA')),
-                        # Balance sheet
-                        total_assets=self._safe_float(balance.get('Total Assets')),
-                        current_assets=self._safe_float(balance.get('Current Assets')),
-                        total_liabilities=self._safe_float(balance.get('Total Liabilities Net Minority Interest')),
-                        current_liabilities=self._safe_float(balance.get('Current Liabilities')),
-                        shareholders_equity=self._safe_float(balance.get('Stockholders Equity')),
-                        # Cash flow
-                        operating_cash_flow=self._safe_float(cashflow.get('Operating Cash Flow')),
-                        free_cash_flow=self._safe_float(cashflow.get('Free Cash Flow')),
-                    )
+                    # Extract forensics fields (Phase 3)
+                    receivables = self._extract_field(balance, [
+                        'Receivables', 'Accounts Receivable', 'Total Receivables Net'
+                    ])
+                    ppe = self._extract_field(balance, [
+                        'Net PPE', 'Property Plant Equipment Net', 'Property Plant And Equipment Net'
+                    ])
+                    depreciation = self._extract_field(cashflow, [
+                        'Depreciation And Amortization', 'Depreciation', 'Depreciation Amortization Depletion'
+                    ])
+                    sga_expense = self._extract_field(financials, [
+                        'Selling General And Administrative', 'Operating Expense', 'Selling And Marketing Expense'
+                    ])
+                    cash = self._extract_field(balance, [
+                        'Cash And Cash Equivalents', 'Cash Cash Equivalents And Short Term Investments',
+                        'Cash', 'Cash And Short Term Investments'
+                    ])
+                    short_term_debt = self._extract_field(balance, [
+                        'Current Debt', 'Short Long Term Debt', 'Short Term Debt'
+                    ])
+                    retained_earnings = self._extract_field(balance, [
+                        'Retained Earnings'
+                    ])
 
-                    session.add(fundamental)
-                    self.stats['fundamentals_inserted'] += 1
+                    # Check if exists
+                    existing = session.execute(
+                        text("SELECT id FROM fundamentals WHERE ticker_id = :tid AND period_end = :pd"),
+                        {'tid': ticker_id, 'pd': period_end.date()}
+                    ).first()
+
+                    if existing:
+                        # Update existing record with forensics fields
+                        session.execute(
+                            text("""
+                                UPDATE fundamentals
+                                SET receivables = :receivables,
+                                    ppe = :ppe,
+                                    depreciation = :depreciation,
+                                    sga_expense = :sga_expense,
+                                    cash = :cash,
+                                    short_term_debt = :short_term_debt,
+                                    retained_earnings = :retained_earnings,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE ticker_id = :tid AND period_end = :pd
+                            """),
+                            {
+                                'receivables': receivables,
+                                'ppe': ppe,
+                                'depreciation': depreciation,
+                                'sga_expense': sga_expense,
+                                'cash': cash,
+                                'short_term_debt': short_term_debt,
+                                'retained_earnings': retained_earnings,
+                                'tid': ticker_id,
+                                'pd': period_end.date()
+                            }
+                        )
+                        self.stats['fundamentals_inserted'] += 1
+                    else:
+                        # Insert new record
+                        fundamental = Fundamental(
+                            ticker_id=ticker_id,
+                            period_end=period_end.date(),
+                            report_type='A',
+                            fiscal_year=period_end.year,
+                            # Income statement
+                            revenue=self._safe_float(financials.get('Total Revenue')),
+                            gross_profit=self._safe_float(financials.get('Gross Profit')),
+                            operating_income=self._safe_float(financials.get('Operating Income')),
+                            net_income=self._safe_float(financials.get('Net Income')),
+                            ebitda=self._safe_float(financials.get('EBITDA')),
+                            # Balance sheet
+                            total_assets=self._safe_float(balance.get('Total Assets')),
+                            current_assets=self._safe_float(balance.get('Current Assets')),
+                            total_liabilities=self._safe_float(balance.get('Total Liabilities Net Minority Interest')),
+                            current_liabilities=self._safe_float(balance.get('Current Liabilities')),
+                            shareholders_equity=self._safe_float(balance.get('Stockholders Equity')),
+                            # Cash flow
+                            operating_cash_flow=self._safe_float(cashflow.get('Operating Cash Flow')),
+                            free_cash_flow=self._safe_float(cashflow.get('Free Cash Flow')),
+                            # Forensics fields (Phase 3)
+                            receivables=receivables,
+                            ppe=ppe,
+                            depreciation=depreciation,
+                            sga_expense=sga_expense,
+                            cash=cash,
+                            short_term_debt=short_term_debt,
+                            retained_earnings=retained_earnings,
+                        )
+
+                        session.add(fundamental)
+                        self.stats['fundamentals_inserted'] += 1
 
                 session.commit()
                 return True
@@ -289,7 +436,7 @@ class DataPopulator:
                 return False
 
     def _compute_factors(self, tickers: list[dict]):
-        """Compute and insert factors from fundamentals"""
+        """Compute and insert/update factors from fundamentals"""
         success_count = 0
 
         with Session(self.engine) as session:
@@ -297,7 +444,36 @@ class DataPopulator:
                 try:
                     factors = self._calculate_factors(session, ticker['id'])
                     if factors:
-                        session.add(factors)
+                        # Check if factors exist for this ticker and as_of_date
+                        existing = session.execute(
+                            text("SELECT id FROM factors WHERE ticker_id = :tid AND as_of_date = :date"),
+                            {'tid': factors.ticker_id, 'date': factors.as_of_date}
+                        ).first()
+
+                        if existing:
+                            # Update existing record
+                            session.execute(
+                                text("""
+                                    UPDATE factors
+                                    SET roce = :roce,
+                                        revenue_growth_5y = :rev_growth,
+                                        gross_margin = :gm,
+                                        debt_to_equity = :dte,
+                                        updated_at = CURRENT_TIMESTAMP
+                                    WHERE ticker_id = :tid AND as_of_date = :date
+                                """),
+                                {
+                                    'roce': factors.roce,
+                                    'rev_growth': factors.revenue_growth_5y,
+                                    'gm': factors.gross_margin,
+                                    'dte': factors.debt_to_equity,
+                                    'tid': factors.ticker_id,
+                                    'date': factors.as_of_date
+                                }
+                            )
+                        else:
+                            session.add(factors)
+
                         success_count += 1
                 except Exception as e:
                     logger.error(f"Failed to compute factors for {ticker['symbol']}: {e}")
@@ -354,9 +530,14 @@ class DataPopulator:
             debt_to_equity = (latest['total_liabilities'] / latest['shareholders_equity']) if latest['shareholders_equity'] > 0 else None
 
             # Create Factor record
+            # Convert period_end to date if it's a string
+            period_end = latest['period_end']
+            if isinstance(period_end, str):
+                period_end = datetime.fromisoformat(period_end).date()
+
             return Factor(
                 ticker_id=ticker_id,
-                as_of_date=latest['period_end'],
+                as_of_date=period_end,
                 roce=roce,
                 revenue_growth_5y=revenue_cagr,
                 gross_margin=gross_margin,
@@ -375,6 +556,24 @@ class DataPopulator:
             return float(value)
         except (ValueError, TypeError):
             return None
+
+    def _extract_field(self, df: pd.Series, keys: list[str]) -> float | None:
+        """
+        Extract field from pandas Series trying multiple possible key names.
+
+        Args:
+            df: Pandas Series (row from DataFrame)
+            keys: List of possible key names in priority order
+
+        Returns:
+            Float value or None if not found
+        """
+        for key in keys:
+            if key in df.index:
+                value = df.get(key)
+                if value is not None and pd.notna(value):
+                    return self._safe_float(value)
+        return None
 
     def _print_summary(self):
         """Print population summary"""
