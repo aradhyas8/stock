@@ -558,5 +558,72 @@ def db_snapshot(
         raise typer.Exit(1) from e
 
 
+@app.command()
+def portfolio(
+    action: str = typer.Argument(..., help="Action: reconcile"),
+    holdings_file: str = typer.Option(..., "--holdings", "-h", help="Path to holdings CSV/JSON file"),
+    as_of: str = typer.Option(None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", "-o", help="Output directory"),
+    top_n: int = typer.Option(15, "--top-n", help="Top N candidates from research"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print actions without writing files"),
+) -> None:
+    """Portfolio reconciliation and rebalancing"""
+    console.print("[blue]📊 Portfolio Reconciliation[/blue]")
+
+    if action != "reconcile":
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: reconcile")
+        raise typer.Exit(1)
+
+    try:
+        from multibagger.portfolio import (
+            reconcile_portfolio,
+            save_reconciliation_outputs,
+            print_reconciliation_summary,
+        )
+
+        config = get_config()
+
+        # Default as_of to current month
+        if as_of is None:
+            as_of = datetime.datetime.now().strftime("%Y-%m")
+
+        console.print(f"\n[cyan]Reconciling portfolio as of {as_of}[/cyan]")
+        console.print(f"Holdings file: {holdings_file}")
+        console.print(f"Top N candidates: {top_n}\n")
+
+        # Run reconciliation
+        results = reconcile_portfolio(
+            config=config,
+            as_of=as_of,
+            holdings_file=holdings_file,
+            output_dir=output_dir,
+            top_n=top_n
+        )
+
+        if results['status'] != 'success':
+            console.print(f"[red]❌ Reconciliation failed: {results.get('reason', 'Unknown error')}[/red]")
+            raise typer.Exit(1)
+
+        # Save outputs (unless dry-run)
+        if not dry_run:
+            output_paths = save_reconciliation_outputs(results, as_of, output_dir)
+        else:
+            console.print("\n[yellow]DRY RUN: No files written[/yellow]")
+            output_paths = {}
+
+        # Print summary
+        print_reconciliation_summary(results, output_paths)
+
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ File not found: {e}[/red]")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        console.print(f"[red]❌ Portfolio reconciliation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
 if __name__ == "__main__":
     app()

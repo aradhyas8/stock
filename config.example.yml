@@ -206,7 +206,19 @@ research:
 
 # Portfolio Configuration
 portfolio:
-  max_positions: 7                  # Maximum concurrent holdings
+  # Position limits
+  max_positions: 15                 # Maximum concurrent holdings
+  top_n_candidates: 15              # Top N from research to consider for model
+
+  # Weight caps (percentage)
+  max_weight_pct: 20.0              # Maximum weight for single position
+  min_weight_pct: 3.0               # Minimum weight to include (else drop)
+  drift_tolerance_pct: 2.0          # ±% drift before triggering rebalance action
+
+  # Risk management
+  stop_loss_pct: -25.0              # Flag positions down >25% (informational)
+
+  # Legacy position sizing (for future use)
   position_sizing:
     high_conviction: 0.20           # 20% for score > 90
     medium_conviction: 0.15         # 15% for score 80-90
