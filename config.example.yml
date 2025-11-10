@@ -140,12 +140,32 @@ screen:
     min_reinvestment_rate: 0.0      # % (optional, 0 = no filter)
     max_reinvestment_rate: 100.0    # % (optional, 100 = no filter)
 
-# Red Flag Thresholds
-red_flags:
-  beneish_mscore: -1.78             # Above = manipulation risk
-  altman_zscore: 1.8                # Below = bankruptcy risk
-  piotroski_fscore: 7               # Below = weak fundamentals
-  max_red_flags: 2                  # Auto-eliminate if exceeded
+# Stage 2.4: Red Flag Detection (Phase 3)
+# Multi-layer risk assessment with forensic accounting, governance, and sentiment
+risk:
+  # Composite score weights (MVP: forensics-only)
+  weights:
+    forensics: 1.0                  # Forensic accounting (Beneish, Altman, Sloan)
+    governance: 0.0                 # Governance/insider activity (stub for MVP)
+    sentiment: 0.0                  # News sentiment (stub for MVP)
+
+  # Hard-stop thresholds (priority-ordered elimination)
+  thresholds:
+    # Beneish M-Score: Earnings manipulation detector
+    # Priority 1: M-Score > -2.22 indicates high manipulation probability
+    beneish_cutoff: -2.22           # Above this = "beneish_m_score_high"
+
+    # Altman Z-Score: Bankruptcy predictor
+    # Priority 2: Z-Score < 1.81 indicates distress zone
+    altman_distress: 1.81           # Below this = "altman_z_score_distress"
+
+    # Sloan Accruals: Earnings quality assessment
+    # Priority 3: Accruals > 0.10 indicates earnings quality concerns
+    sloan_warning: 0.10             # Above this = "sloan_accruals_high"
+
+    # Composite score: Weighted risk score (0=low risk, 100=high risk)
+    # Stocks with composite > 40 are eliminated
+    composite_score_max: 40.0       # Maximum acceptable composite risk score
 
 # Portfolio Configuration
 portfolio:

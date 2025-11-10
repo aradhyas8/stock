@@ -256,7 +256,7 @@ def universe(
 
 @app.command()
 def screen(
-    stage: str = typer.Argument(..., help="Stage: fast, quality, business, or all"),
+    stage: str = typer.Argument(..., help="Stage: fast, quality, business, redflags, or all"),
     as_of: str = typer.Option(
         None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"
     ),
@@ -271,24 +271,47 @@ def screen(
         from multibagger.screens.fast import screen_fast
         from multibagger.screens.quality import screen_quality
         from multibagger.screens.business import screen_business
+        from multibagger.screens.redflags import screen_redflags
 
         config = get_config()
 
         if stage == "fast" or stage == "all":
-            console.print("\n[cyan]Stage 1: Quick Screener[/cyan]")
-            screen_fast(config, as_of=as_of, output_dir=output_dir)
+            console.print("\n[cyan]Stage 2.1: Quick Screener[/cyan]")
+            result = screen_fast(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
 
         if stage == "quality" or stage == "all":
-            console.print("\n[cyan]Stage 2: Quality Filter[/cyan]")
-            screen_quality(config, as_of=as_of, output_dir=output_dir)
+            console.print("\n[cyan]Stage 2.2: Quality Filter[/cyan]")
+            result = screen_quality(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
 
         if stage == "business" or stage == "all":
-            console.print("\n[cyan]Stage 3: Business Filter[/cyan]")
-            screen_business(config, as_of=as_of, output_dir=output_dir)
+            console.print("\n[cyan]Stage 2.3: Business Filter[/cyan]")
+            result = screen_business(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
 
-        if stage not in ["fast", "quality", "business", "all"]:
+        if stage == "redflags" or stage == "all":
+            console.print("\n[cyan]Stage 2.4: Red Flag Detection[/cyan]")
+            result = screen_redflags(config, as_of=as_of, output_dir=output_dir)
+
+            # Display detailed summary
+            console.print(f"\n[bold]Red Flag Analysis Summary:[/bold]")
+            console.print(f"  Input tickers: {result.total_input:,}")
+            console.print(f"  Survivors: {result.total_survivors:,} ({result.total_survivors/result.total_input*100:.1f}%)")
+            console.print(f"  Eliminated: {result.total_input - result.total_survivors:,}")
+            console.print(f"  Runtime: {result.runtime_seconds:.2f}s")
+
+            # Show elimination breakdown
+            if result.removed_by_rule:
+                console.print(f"\n[bold]Elimination Breakdown:[/bold]")
+                for rule, count in result.removed_by_rule.items():
+                    console.print(f"  {rule}: {count:,} tickers")
+
+            console.print(f"\n✅ Red flag detection complete")
+
+        if stage not in ["fast", "quality", "business", "redflags", "all"]:
             console.print(f"[red]Unknown stage: {stage}[/red]")
-            console.print("Available stages: fast, quality, business, all")
+            console.print("Available stages: fast, quality, business, redflags, all")
             raise typer.Exit(1)
 
         console.print("\n[green]✅ Screening complete![/green]")
