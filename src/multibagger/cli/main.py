@@ -255,10 +255,47 @@ def universe(
 
 
 @app.command()
-def screen() -> None:
-    """Run screening pipeline only"""
-    console.print("[blue]🔬 Stock Screening[/blue]")
-    console.print("Screening engine not implemented yet - Phase 2 feature")
+def screen(
+    stage: str = typer.Argument(..., help="Stage: fast, quality, business, or all"),
+    as_of: str = typer.Option(
+        None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"
+    ),
+    output_dir: str = typer.Option(
+        "snapshots", "--output-dir", "-o", help="Output directory"
+    ),
+) -> None:
+    """Run screening pipeline stages"""
+    console.print(f"[blue]🔬 Running {stage.upper()} Screen[/blue]")
+
+    try:
+        from multibagger.screens.fast import screen_fast
+        from multibagger.screens.quality import screen_quality
+        from multibagger.screens.business import screen_business
+
+        config = get_config()
+
+        if stage == "fast" or stage == "all":
+            console.print("\n[cyan]Stage 1: Quick Screener[/cyan]")
+            screen_fast(config, as_of=as_of, output_dir=output_dir)
+
+        if stage == "quality" or stage == "all":
+            console.print("\n[cyan]Stage 2: Quality Filter[/cyan]")
+            screen_quality(config, as_of=as_of, output_dir=output_dir)
+
+        if stage == "business" or stage == "all":
+            console.print("\n[cyan]Stage 3: Business Filter[/cyan]")
+            screen_business(config, as_of=as_of, output_dir=output_dir)
+
+        if stage not in ["fast", "quality", "business", "all"]:
+            console.print(f"[red]Unknown stage: {stage}[/red]")
+            console.print("Available stages: fast, quality, business, all")
+            raise typer.Exit(1)
+
+        console.print("\n[green]✅ Screening complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Screening failed: {e}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
