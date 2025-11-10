@@ -64,7 +64,7 @@ class YFinanceAdapter:
                     group_by='ticker',
                     auto_adjust=False,
                     progress=False,
-                    threads=True,
+                    threads=False,  # Disable threading for compatibility
                 )
 
                 # Parse results

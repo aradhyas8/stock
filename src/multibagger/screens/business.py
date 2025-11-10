@@ -40,7 +40,10 @@ def fetch_historical_fundamentals(
     if not ticker_ids:
         return pd.DataFrame()
 
-    query = text("""
+    # Create placeholders for IN clause
+    placeholders = ','.join([f':id{i}' for i in range(len(ticker_ids))])
+
+    query = text(f"""
         SELECT
             f.ticker_id,
             t.symbol,
@@ -56,13 +59,17 @@ def fetch_historical_fundamentals(
             f.total_liabilities
         FROM fundamentals f
         INNER JOIN tickers t ON f.ticker_id = t.id
-        WHERE f.ticker_id IN :ticker_ids
+        WHERE f.ticker_id IN ({placeholders})
           AND f.report_type = 'A'
           AND f.fiscal_year >= (strftime('%Y', 'now') - :years)
         ORDER BY f.ticker_id, f.fiscal_year DESC
     """)
 
-    result = session.execute(query, {"ticker_ids": tuple(ticker_ids), "years": years})
+    # Build params dict
+    params = {f'id{i}': tid for i, tid in enumerate(ticker_ids)}
+    params['years'] = years
+
+    result = session.execute(query, params)
 
     df = pd.DataFrame(result.fetchall(), columns=result.keys())
 

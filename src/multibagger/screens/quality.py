@@ -40,7 +40,10 @@ def fetch_factors_for_tickers(
     if not ticker_ids:
         return pd.DataFrame()
 
-    query = text("""
+    # Create placeholders for IN clause
+    placeholders = ','.join([f':id{i}' for i in range(len(ticker_ids))])
+
+    query = text(f"""
         SELECT
             f.ticker_id,
             t.symbol,
@@ -52,15 +55,16 @@ def fetch_factors_for_tickers(
             f.fcf_yield
         FROM factors f
         INNER JOIN tickers t ON f.ticker_id = t.id
-        WHERE f.ticker_id IN :ticker_ids
+        WHERE f.ticker_id IN ({placeholders})
           AND f.as_of_date <= :as_of_date
         ORDER BY f.ticker_id, f.as_of_date DESC
     """)
 
-    # Use bindparam for list
-    result = session.execute(
-        query, {"ticker_ids": tuple(ticker_ids), "as_of_date": as_of_date}
-    )
+    # Build params dict with individual ID parameters
+    params = {f'id{i}': tid for i, tid in enumerate(ticker_ids)}
+    params['as_of_date'] = as_of_date
+
+    result = session.execute(query, params)
 
     df = pd.DataFrame(result.fetchall(), columns=result.keys())
 
