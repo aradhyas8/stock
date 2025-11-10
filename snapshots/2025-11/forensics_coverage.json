@@ -1,0 +1,52 @@
+{
+  "as_of": "2025-11",
+  "timestamp": "2025-11-10T06:20:39.748031",
+  "csv_path": "snapshots/2025-11/stage_business_2025-11.csv",
+  "field_coverage": {
+    "receivables": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "ppe": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "depreciation": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "sga_expense": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "cash": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "short_term_debt": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    },
+    "retained_earnings": {
+      "yfinance": 0,
+      "alpha_vantage": 0,
+      "missing": 0,
+      "coverage_pct": 0
+    }
+  },
+  "overall_coverage_pct": 0,
+  "fundamentals_fetched": 0,
+  "fundamentals_inserted": 0
+}

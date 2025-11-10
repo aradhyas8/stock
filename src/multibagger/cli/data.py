@@ -437,9 +437,10 @@ def backfill_forensics(
         )
 
         # Build coverage report
+        from datetime import datetime as dt
         coverage_report = {
             'as_of': as_of,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': dt.utcnow().isoformat(),
             'csv_path': str(csv_file),
             'field_coverage': total_by_field,
             'overall_coverage_pct': round(overall_coverage_pct, 1),
