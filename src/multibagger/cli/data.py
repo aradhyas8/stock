@@ -8,8 +8,10 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from multibagger.config import get_config
 from multibagger.data.config import DataConfig
 from multibagger.data.fetcher import DataFetcher
+from multibagger.data.populate import DataPopulator
 
 app = typer.Typer(
     name="data",
@@ -276,5 +278,84 @@ def fetch_prices(
         raise typer.Exit(1)
 
 
-if __name__ == "__main__":
-    app()
+@app.command()
+def populate(
+    sample: bool = typer.Option(
+        False, "--sample", help="Sample mode: process only 50 tickers for testing"
+    ),
+    sample_size: int = typer.Option(
+        50, "--sample-size", help="Number of tickers in sample mode"
+    ),
+) -> None:
+    """Populate database with real market data from APIs"""
+    console.print("[blue]📦 Populating Database with Market Data[/blue]")
+
+    try:
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population
+        stats = populator.populate_all(sample_mode=sample, sample_size=sample_size)
+
+        if stats['errors']:
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} errors[/yellow]")
+            raise typer.Exit(1)
+        else:
+            console.print("\n[green]✅ Data population complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Population failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def validate() -> None:
+    """Validate data coverage and quality"""
+    console.print("[blue]🔍 Validating Data Coverage[/blue]")
+
+    try:
+        from multibagger.database.schema import get_engine
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+
+        engine = get_engine()
+
+        with Session(engine) as session:
+            # Get counts
+            ticker_count = session.execute(text("SELECT COUNT(*) FROM tickers WHERE active = 1")).scalar()
+            price_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM prices")).scalar()
+            fundamental_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM fundamentals")).scalar()
+            factor_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM factors")).scalar()
+
+            # Calculate coverage
+            price_coverage = (price_count / ticker_count * 100) if ticker_count > 0 else 0
+            fundamental_coverage = (fundamental_count / ticker_count * 100) if ticker_count > 0 else 0
+            factor_coverage = (factor_count / ticker_count * 100) if ticker_count > 0 else 0
+
+            # Display results
+            table = Table(title="Data Coverage Report")
+            table.add_column("Data Type", style="cyan")
+            table.add_column("Tickers", style="magenta")
+            table.add_column("Coverage", style="green")
+            table.add_column("Status", style="yellow")
+
+            table.add_row("Universe", f"{ticker_count}", "100%", "✅")
+            table.add_row("Prices", f"{price_count}", f"{price_coverage:.1f}%",
+                         "✅" if price_coverage >= 95 else "⚠️")
+            table.add_row("Fundamentals", f"{fundamental_count}", f"{fundamental_coverage:.1f}%",
+                         "✅" if fundamental_coverage >= 10 else "⚠️")
+            table.add_row("Factors", f"{factor_count}", f"{factor_coverage:.1f}%",
+                         "✅" if factor_coverage >= 10 else "⚠️")
+
+            console.print("\n")
+            console.print(table)
+
+            # Overall status
+            if price_coverage >= 95 and fundamental_coverage >= 10:
+                console.print("\n[green]✅ Data quality is good - ready for screening![/green]")
+            else:
+                console.print("\n[yellow]⚠️  Data coverage below targets - run 'data populate' first[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Validation failed: {e}[/red]")
+        raise typer.Exit(1) from e
