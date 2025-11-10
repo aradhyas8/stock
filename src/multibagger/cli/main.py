@@ -256,7 +256,7 @@ def universe(
 
 @app.command()
 def screen(
-    stage: str = typer.Argument(..., help="Stage: fast, quality, business, redflags, or all"),
+    stage: str = typer.Argument(..., help="Stage: fast, quality, business, redflags, research, or all"),
     as_of: str = typer.Option(
         None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"
     ),
@@ -272,6 +272,7 @@ def screen(
         from multibagger.screens.quality import screen_quality
         from multibagger.screens.business import screen_business
         from multibagger.screens.redflags import screen_redflags
+        from multibagger.screens.research import screen_research
 
         config = get_config()
 
@@ -309,9 +310,14 @@ def screen(
 
             console.print(f"\n✅ Red flag detection complete")
 
-        if stage not in ["fast", "quality", "business", "redflags", "all"]:
+        if stage == "research" or stage == "all":
+            console.print("\n[cyan]Stage 2.5: Research & Valuation[/cyan]")
+            result = screen_research(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"\n✅ Generated {result.total_survivors} research reports")
+
+        if stage not in ["fast", "quality", "business", "redflags", "research", "all"]:
             console.print(f"[red]Unknown stage: {stage}[/red]")
-            console.print("Available stages: fast, quality, business, redflags, all")
+            console.print("Available stages: fast, quality, business, redflags, research, all")
             raise typer.Exit(1)
 
         console.print("\n[green]✅ Screening complete![/green]")
