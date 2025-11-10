@@ -1,5 +1,6 @@
 """Portfolio reconciliation - diff holdings vs model candidates"""
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from multibagger.common.sql_utils import build_in_clause_params
 from multibagger.config import Config
+from multibagger.database.models import PortfolioRun, PortfolioPosition, PortfolioAction
 from multibagger.database.schema import get_engine
 
 from .loader import load_holdings, validate_holdings
@@ -232,6 +234,119 @@ def compute_reconciliation_diff(
     return merged, stats
 
 
+def persist_reconciliation_to_db(
+    session: Session,
+    as_of: str,
+    model_df: pd.DataFrame,
+    actions_df: pd.DataFrame,
+    stats: Dict,
+    portfolio_config: Dict
+) -> int:
+    """
+    Persist reconciliation results to database (idempotent).
+
+    Args:
+        session: DB session
+        as_of: YYYY-MM date
+        model_df: Model portfolio DataFrame (with target_weight_pct)
+        actions_df: Actions DataFrame
+        stats: Reconciliation statistics
+        portfolio_config: Portfolio configuration used
+
+    Returns:
+        run_id of the persisted run
+    """
+    # Convert YYYY-MM to date (first of month)
+    as_of_date = datetime.strptime(f"{as_of}-01", "%Y-%m-%d").date()
+
+    # Build metrics JSON
+    metrics = {
+        'turnover_pct': float(stats.get('turnover_pct', 0)),
+        'action_counts': {k: int(v) for k, v in stats.items() if k != 'turnover_pct'},
+        'position_count': len(model_df),
+        'config_assumptions': {
+            'max_positions': portfolio_config.get('max_positions', 7),
+            'max_weight_pct': portfolio_config.get('max_weight_pct', 30.0),
+            'min_weight_pct': portfolio_config.get('min_weight_pct', 10.0),
+            'drift_tolerance_pct': portfolio_config.get('drift_tolerance_pct', 0.05),
+            'top_n_candidates': portfolio_config.get('top_n_candidates', 15),
+        }
+    }
+
+    # UPSERT portfolio_runs
+    existing_run = session.query(PortfolioRun).filter_by(as_of_date=as_of_date).first()
+
+    if existing_run:
+        logger.info(f"Updating existing portfolio run for {as_of}")
+        existing_run.metrics_json = json.dumps(metrics, indent=2)
+        run_id = existing_run.id
+
+        # Delete old positions and actions (cascade will handle this)
+        session.query(PortfolioPosition).filter_by(run_id=run_id).delete()
+        session.query(PortfolioAction).filter_by(run_id=run_id).delete()
+    else:
+        logger.info(f"Creating new portfolio run for {as_of}")
+        new_run = PortfolioRun(
+            as_of_date=as_of_date,
+            metrics_json=json.dumps(metrics, indent=2)
+        )
+        session.add(new_run)
+        session.flush()  # Get the ID
+        run_id = new_run.id
+
+    # Batch insert positions (stable ordering: weight desc, ticker_id asc)
+    positions = []
+    model_sorted = model_df.sort_values(
+        ['target_weight_pct', 'ticker_id'],
+        ascending=[False, True]
+    )
+
+    for _, row in model_sorted.iterrows():
+        position = PortfolioPosition(
+            run_id=run_id,
+            ticker_id=int(row['ticker_id']),
+            weight_pct=float(row['target_weight_pct']),
+            entry_price=float(row.get('current_price', 0)) if pd.notna(row.get('current_price')) else None,
+            target_price=float(row.get('intrinsic_value', 0)) if pd.notna(row.get('intrinsic_value')) else None,
+            stop_loss_price=None,  # Could be computed later
+            conviction_score=float(row.get('conviction_score', 0)) if pd.notna(row.get('conviction_score')) else None,
+            notes_json=json.dumps({
+                'symbol': row.get('symbol', ''),
+                'upside_pct': float(row.get('upside_pct', 0)) if pd.notna(row.get('upside_pct')) else None,
+                'market_cap': float(row.get('market_cap', 0)) if pd.notna(row.get('market_cap')) else None,
+            })
+        )
+        positions.append(position)
+
+    session.bulk_save_objects(positions)
+    logger.info(f"Persisted {len(positions)} positions")
+
+    # Batch insert actions (stable ordering: action priority, ticker_id)
+    actions = []
+    for _, row in actions_df.iterrows():
+        action = PortfolioAction(
+            run_id=run_id,
+            action=row['action'],
+            ticker_id=int(row['ticker_id']) if pd.notna(row.get('ticker_id')) else None,
+            reason=row.get('reason', ''),
+            details_json=json.dumps({
+                'symbol': row.get('symbol', ''),
+                'held_weight': float(row.get('held_weight', 0)) if pd.notna(row.get('held_weight')) else 0,
+                'model_weight': float(row.get('model_weight', 0)) if pd.notna(row.get('model_weight')) else 0,
+                'delta_weight': float(row.get('delta_weight', 0)) if pd.notna(row.get('delta_weight')) else 0,
+            })
+        )
+        actions.append(action)
+
+    session.bulk_save_objects(actions)
+    logger.info(f"Persisted {len(actions)} actions")
+
+    session.commit()
+    logger.info(f"Portfolio run {run_id} persisted successfully")
+
+    return run_id
+
+
 def reconcile_portfolio(
     config: Config,
     as_of: str,
@@ -323,10 +438,22 @@ def reconcile_portfolio(
         portfolio_config
     )
 
+    # Persist to database (idempotent)
+    with Session(engine) as persist_session:
+        run_id = persist_reconciliation_to_db(
+            persist_session,
+            as_of,
+            model_df,
+            actions_df,
+            stats,
+            portfolio_config
+        )
+
     # Prepare results
     results = {
         'status': 'success',
         'as_of_date': as_of,
+        'run_id': run_id,
         'holdings_count': len(holdings_df),
         'matched_count': len(matched_holdings),
         'unmatched_count': len(unmatched_holdings),
@@ -336,6 +463,6 @@ def reconcile_portfolio(
         'stats': stats
     }
 
-    logger.info("Portfolio reconciliation complete")
+    logger.info(f"Portfolio reconciliation complete (run_id={run_id})")
 
     return results

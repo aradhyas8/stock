@@ -445,3 +445,92 @@ class Research(Base):
         Index("ix_research_date", "as_of_date"),
         Index("ix_research_upside", "upside_pct"),
     )
+
+
+class PortfolioRun(Base):
+    """Phase 5: Portfolio reconciliation runs - monthly snapshots"""
+
+    __tablename__ = "portfolio_runs"
+
+    id = Column(Integer, primary_key=True)
+    as_of_date = Column(Date, unique=True, nullable=False)  # YYYY-MM-01 for idempotency
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Metrics and configuration
+    metrics_json = Column(Text, nullable=False)  # turnover_pct, position_counts, config assumptions
+
+    # Relationships
+    positions = relationship("PortfolioPosition", back_populates="run", cascade="all, delete-orphan")
+    actions = relationship("PortfolioAction", back_populates="run", cascade="all, delete-orphan")
+
+    # Constraints
+    __table_args__ = (
+        Index("ix_portfolio_run_date", "as_of_date"),
+    )
+
+
+class PortfolioPosition(Base):
+    """Phase 5: Target portfolio positions for a given run"""
+
+    __tablename__ = "portfolio_positions"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("portfolio_runs.id"), nullable=False)
+    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
+
+    # Position sizing
+    weight_pct = Column(Numeric(5, 2), nullable=False)  # Target allocation percentage
+
+    # Pricing and targets
+    entry_price = Column(Numeric(12, 4), nullable=True)  # Current/entry price
+    target_price = Column(Numeric(12, 4), nullable=True)  # DCF fair value
+    stop_loss_price = Column(Numeric(12, 4), nullable=True)  # Risk management
+
+    # Conviction
+    conviction_score = Column(Numeric(5, 2), nullable=True)  # 0-100 score
+
+    # Additional metadata
+    notes_json = Column(Text, nullable=True)  # Additional details (thesis, moat, etc.)
+
+    # Relationships
+    run = relationship("PortfolioRun", back_populates="positions")
+    ticker = relationship("Ticker")
+
+    # Constraints
+    __table_args__ = (
+        Index("ix_portfolio_position_run_ticker", "run_id", "ticker_id", unique=True),
+        Index("ix_portfolio_position_run", "run_id"),
+        Index("ix_portfolio_position_ticker", "ticker_id"),
+    )
+
+
+class PortfolioAction(Base):
+    """Phase 5: Recommended portfolio actions for a given run"""
+
+    __tablename__ = "portfolio_actions"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("portfolio_runs.id"), nullable=False)
+
+    # Action type
+    action = Column(String(10), nullable=False)  # BUY, SELL, TRIM, ADD, HOLD
+
+    # Target (nullable for CASH adjustments)
+    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=True)
+
+    # Rationale
+    reason = Column(Text, nullable=True)  # Human-readable reason
+
+    # Details
+    details_json = Column(Text, nullable=True)  # weights, drifts, prices
+
+    # Relationships
+    run = relationship("PortfolioRun", back_populates="actions")
+    ticker = relationship("Ticker")
+
+    # Constraints
+    __table_args__ = (
+        Index("ix_portfolio_action_run", "run_id"),
+        Index("ix_portfolio_action_type", "action"),
+        Index("ix_portfolio_action_ticker", "ticker_id"),
+    )

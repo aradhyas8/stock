@@ -625,5 +625,118 @@ def portfolio(
         raise typer.Exit(1) from e
 
 
+@app.command(name="portfolio-show")
+def portfolio_show(
+    as_of: str = typer.Option(..., "--as-of", help="Show portfolio for YYYY-MM"),
+) -> None:
+    """Show saved portfolio reconciliation from database (no recompute)"""
+    console.print(f"[blue]📊 Portfolio Report for {as_of}[/blue]\n")
+
+    try:
+        from datetime import datetime as dt
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+        from multibagger.database.schema import get_engine
+        from multibagger.database.models import PortfolioRun, PortfolioPosition, PortfolioAction
+        import json
+
+        # Convert to date
+        as_of_date = dt.strptime(f"{as_of}-01", "%Y-%m-%d").date()
+
+        engine = get_engine()
+        with Session(engine) as session:
+            # Fetch run
+            run = session.query(PortfolioRun).filter_by(as_of_date=as_of_date).first()
+
+            if not run:
+                console.print(f"[red]❌ No portfolio run found for {as_of}[/red]")
+                console.print("Run 'portfolio reconcile' first to create a portfolio.")
+                raise typer.Exit(1)
+
+            # Parse metrics
+            metrics = json.loads(run.metrics_json)
+
+            # Display metrics
+            metrics_table = Table(title=f"Portfolio Metrics - {as_of}", show_header=True)
+            metrics_table.add_column("Metric", style="cyan")
+            metrics_table.add_column("Value", style="green")
+
+            metrics_table.add_row("Turnover", f"{metrics['turnover_pct']}%")
+            metrics_table.add_row("Position Count", str(metrics['position_count']))
+
+            for action, count in metrics['action_counts'].items():
+                metrics_table.add_row(f"{action.title()} Actions", str(count))
+
+            console.print(metrics_table)
+
+            # Display config assumptions
+            console.print(f"\n[dim]Config: max_positions={metrics['config_assumptions']['max_positions']}, "
+                         f"max_weight={metrics['config_assumptions']['max_weight_pct']}%, "
+                         f"min_weight={metrics['config_assumptions']['min_weight_pct']}%, "
+                         f"drift_tolerance={metrics['config_assumptions']['drift_tolerance_pct']*100}%[/dim]\n")
+
+            # Fetch positions
+            positions = session.query(PortfolioPosition).filter_by(run_id=run.id).order_by(
+                PortfolioPosition.weight_pct.desc()
+            ).all()
+
+            # Display positions
+            positions_table = Table(title="Target Portfolio Positions", show_header=True)
+            positions_table.add_column("Symbol", style="cyan")
+            positions_table.add_column("Weight %", justify="right", style="green")
+            positions_table.add_column("Entry Price", justify="right")
+            positions_table.add_column("Target Price", justify="right")
+            positions_table.add_column("Upside %", justify="right")
+            positions_table.add_column("Conviction", justify="right")
+
+            total_weight = 0.0
+            for pos in positions:
+                notes = json.loads(pos.notes_json) if pos.notes_json else {}
+                symbol = notes.get('symbol', f"ID:{pos.ticker_id}")
+                upside = notes.get('upside_pct', 0)
+                total_weight += float(pos.weight_pct)
+
+                positions_table.add_row(
+                    symbol,
+                    f"{pos.weight_pct:.2f}",
+                    f"${pos.entry_price:.2f}" if pos.entry_price else "-",
+                    f"${pos.target_price:.2f}" if pos.target_price else "-",
+                    f"{upside:.1f}%" if upside else "-",
+                    f"{pos.conviction_score:.0f}" if pos.conviction_score else "-"
+                )
+
+            console.print(positions_table)
+            console.print(f"\n[dim]Total Weight: {total_weight:.2f}%[/dim]")
+
+            # Fetch actions
+            actions = session.query(PortfolioAction).filter_by(run_id=run.id).all()
+
+            if actions:
+                console.print("\n")
+                actions_table = Table(title="Recommended Actions", show_header=True)
+                actions_table.add_column("Action", style="yellow")
+                actions_table.add_column("Symbol", style="cyan")
+                actions_table.add_column("Reason", style="white")
+
+                for action in actions:
+                    details = json.loads(action.details_json) if action.details_json else {}
+                    symbol = details.get('symbol', f"ID:{action.ticker_id}" if action.ticker_id else "CASH")
+                    actions_table.add_row(
+                        action.action,
+                        symbol,
+                        action.reason or "-"
+                    )
+
+                console.print(actions_table)
+
+            console.print(f"\n[green]✅ Portfolio snapshot from database (run_id={run.id})[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Failed to fetch portfolio: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
 if __name__ == "__main__":
     app()
