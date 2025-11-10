@@ -9,6 +9,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from multibagger.common.sql_utils import build_in_clause_params
 from multibagger.config import Config
 from multibagger.database.schema import get_engine
 
@@ -40,8 +41,8 @@ def fetch_factors_for_tickers(
     if not ticker_ids:
         return pd.DataFrame()
 
-    # Create placeholders for IN clause
-    placeholders = ','.join([f':id{i}' for i in range(len(ticker_ids))])
+    # Build SQL IN clause with dynamic placeholders
+    placeholders, params = build_in_clause_params(ticker_ids, param_prefix='ticker')
 
     query = text(f"""
         SELECT
@@ -60,8 +61,7 @@ def fetch_factors_for_tickers(
         ORDER BY f.ticker_id, f.as_of_date DESC
     """)
 
-    # Build params dict with individual ID parameters
-    params = {f'id{i}': tid for i, tid in enumerate(ticker_ids)}
+    # Add as_of_date to params
     params['as_of_date'] = as_of_date
 
     result = session.execute(query, params)

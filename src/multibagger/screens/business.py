@@ -9,6 +9,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from multibagger.common.sql_utils import build_in_clause_params
 from multibagger.config import Config
 from multibagger.database.schema import get_engine
 
@@ -40,8 +41,8 @@ def fetch_historical_fundamentals(
     if not ticker_ids:
         return pd.DataFrame()
 
-    # Create placeholders for IN clause
-    placeholders = ','.join([f':id{i}' for i in range(len(ticker_ids))])
+    # Build SQL IN clause with dynamic placeholders
+    placeholders, params = build_in_clause_params(ticker_ids, param_prefix='ticker')
 
     query = text(f"""
         SELECT
@@ -65,8 +66,7 @@ def fetch_historical_fundamentals(
         ORDER BY f.ticker_id, f.fiscal_year DESC
     """)
 
-    # Build params dict
-    params = {f'id{i}': tid for i, tid in enumerate(ticker_ids)}
+    # Add years to params
     params['years'] = years
 
     result = session.execute(query, params)
