@@ -131,3 +131,7 @@ dmypy.json
 
 # pytype static type analyzer
 .pytype/
+
+# Snapshot directories (keep structure, ignore contents)
+snapshots/**/
+!snapshots/.gitkeep
