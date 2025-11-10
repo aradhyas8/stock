@@ -352,3 +352,49 @@ class Decision(Base):
         Index("ix_decision_stage", "stage"),
         Index("ix_decision_decision", "decision"),
     )
+
+
+class RiskFlag(Base):
+    """Red flag detection results for ticker risk assessment"""
+
+    __tablename__ = "risk_flags"
+
+    id = Column(Integer, primary_key=True)
+    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+
+    # Forensics Metrics (Accounting/Financial)
+    beneish_m_score = Column(Numeric(8, 4), nullable=True)
+    altman_z_score = Column(Numeric(8, 4), nullable=True)
+    accruals_ratio = Column(Numeric(8, 4), nullable=True)
+    forensics_score = Column(Numeric(5, 2), nullable=True)  # 0-100
+
+    # Governance Metrics (Insiders/Ownership)
+    insider_sell_90d = Column(Numeric(8, 4), nullable=True)  # % of shares
+    promoter_pledge = Column(Numeric(8, 4), nullable=True)  # % of promoter holding
+    governance_score = Column(Numeric(5, 2), nullable=True)  # 0-100
+
+    # Sentiment Metrics (News/Media)
+    neg_news_30d = Column(Integer, nullable=True)  # count of adverse articles
+    severity_score = Column(Numeric(5, 2), nullable=True)  # weighted severity
+    sentiment_score = Column(Numeric(5, 2), nullable=True)  # 0-100
+
+    # Composite Metrics
+    composite_score = Column(Numeric(5, 2), nullable=True)  # 0-100 (weighted avg)
+    first_fail_reason = Column(String(100), nullable=True)  # null if no hard stop
+
+    # Explainability (full breakdown with provenance)
+    details_json = Column(Text, nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    ticker = relationship("Ticker")
+
+    # Constraints
+    __table_args__ = (
+        Index("ix_risk_flag_ticker_date", "ticker_id", "as_of_date", unique=True),
+        Index("ix_risk_flag_composite", "composite_score"),
+        Index("ix_risk_flag_date", "as_of_date"),
+    )
