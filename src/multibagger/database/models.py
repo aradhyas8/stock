@@ -398,3 +398,50 @@ class RiskFlag(Base):
         Index("ix_risk_flag_composite", "composite_score"),
         Index("ix_risk_flag_date", "as_of_date"),
     )
+
+
+class Research(Base):
+    """Phase 4: Research reports with business analysis and valuation"""
+
+    __tablename__ = "research"
+
+    id = Column(Integer, primary_key=True)
+    ticker_id = Column(Integer, ForeignKey("tickers.id"), nullable=False)
+    as_of_date = Column(Date, nullable=False)
+
+    # Business Analysis
+    thesis = Column(Text)  # Executive summary thesis
+    moat = Column(String(50))  # cost_advantage, switching_costs, network_effects, ip_brand, scale, unknown
+    business_model = Column(Text)  # Revenue model description
+    growth_drivers = Column(Text)  # Key growth catalysts
+    top_risks = Column(Text)  # Top 5 risks from filings + red flags
+
+    # Valuation
+    base_fair_value = Column(Numeric(15, 2))  # DCF base case fair value
+    bear_fair_value = Column(Numeric(15, 2))  # DCF bear case
+    bull_fair_value = Column(Numeric(15, 2))  # DCF bull case
+    upside_pct = Column(Numeric(10, 2))  # (base_fair_value - current_price) / current_price * 100
+
+    # JSON Payloads
+    valuation_json = Column(Text)  # Full DCF model with projections
+    comps_json = Column(Text)  # Peer comparables analysis
+    assumptions_json = Column(Text)  # All assumptions for audit trail
+    sources_json = Column(Text)  # Provenance (filings, fundamentals)
+
+    # Report Artifacts
+    report_md_path = Column(String(255))  # Path to Markdown report
+    report_pdf_path = Column(String(255))  # Path to PDF report
+
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    ticker = relationship("Ticker")
+
+    # Constraints
+    __table_args__ = (
+        Index("ix_research_ticker_date", "ticker_id", "as_of_date", unique=True),
+        Index("ix_research_date", "as_of_date"),
+        Index("ix_research_upside", "upside_pct"),
+    )

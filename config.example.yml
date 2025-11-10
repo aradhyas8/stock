@@ -167,6 +167,43 @@ risk:
     # Stocks with composite > 40 are eliminated
     composite_score_max: 40.0       # Maximum acceptable composite risk score
 
+# Phase 4: Research & Valuation
+research:
+  # DCF Valuation Parameters
+  dcf:
+    discount_rate_pct: 10.0         # WACC proxy for cost of capital
+    terminal_g_pct: 2.5             # Perpetuity growth rate
+    exit_multiple_ev_fcf: 12.0      # Exit multiple sanity check
+    growth_spread_pct: 4.0          # ± spread for Bear/Bull scenarios
+    margin_spread_pct: 2.0          # ± margin spread for scenarios
+    tax_rate_pct: 25.0              # Corporate tax rate
+    projection_years: 5             # Years to project
+
+  # Business Analysis
+  filings:
+    us_edgar_enabled: true          # Fetch 10-K/10-Q from SEC
+    in_mca_enabled: false           # India MCA (future)
+    cache_ttl_days: 90              # Cache filings for 90 days
+    request_delay_ms: 200           # Delay between EDGAR requests
+
+  # Report Generation
+  outputs:
+    pdf: true                       # Generate PDF reports
+    markdown: true                  # Generate Markdown reports
+    template: "research_report.md.j2"  # Jinja2 template name
+
+  # Limits & Performance
+  limits:
+    max_reports: 15                 # Max reports per run (performance limit)
+    filing_timeout_seconds: 10      # Timeout for filing fetch per ticker
+    max_peers_for_comps: 10         # Max peer companies for comparables
+
+  # Quality Guardrails
+  guardrails:
+    max_valuation_multiple: 5.0     # Flag if DCF > 5x current price
+    min_fcf_years: 3                # Min positive FCF years for valuation
+    max_comps_divergence_pct: 30.0  # Flag if DCF > 30% vs peer median
+
 # Portfolio Configuration
 portfolio:
   max_positions: 7                  # Maximum concurrent holdings
