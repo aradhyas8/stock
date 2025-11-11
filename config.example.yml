@@ -279,3 +279,28 @@ dev:
   sample_mode: false                # Use small sample for testing
   sample_size: 50                   # Stocks in sample mode
   skip_cache: false                 # Force fresh API calls
+
+# Ops Configuration (Phase 7)
+ops:
+  timezone: "America/Toronto"
+  retention:
+    months_to_keep: 12              # Keep most recent N months of snapshots
+    days_to_keep_alerts: 90         # Keep alert files for N days
+
+  health:
+    universe_size_min: 4500         # Minimum acceptable universe size
+    universe_size_max: 5500         # Maximum acceptable universe size
+    research_coverage_min: 0.80     # Minimum research coverage (80%)
+    price_staleness_warn_days: 7    # Price freshness warning threshold
+    price_staleness_error_days: 30  # Price freshness error threshold
+
+# Analytics Configuration (Phase 7)
+analytics:
+  lookback_months: 36               # Default lookback window (3 years)
+  bench_symbols: ["SPY"]            # Benchmark symbols for comparison
+  slippage_bps: 10                  # Transaction cost assumption (10 bps)
+
+  hit_rate_windows: [3, 6, 12]      # Hit rate calculation windows (months)
+
+  attribution:
+    top_n_positions: 5              # Number of top contributors/detractors to show

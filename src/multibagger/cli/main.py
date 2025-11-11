@@ -839,5 +839,191 @@ def portfolio_show(
         raise typer.Exit(1) from e
 
 
+# ============================================================================
+# Ops Command Group
+# ============================================================================
+
+ops_app = typer.Typer(help="Operational commands (runners, health, rotation)")
+
+
+@ops_app.command(name="run")
+def ops_run(
+    mode: str = typer.Argument(..., help="Mode: monthly or daily"),
+    as_of: str = typer.Option(None, "--as-of", help="Month (YYYY-MM) for monthly run"),
+    date: str = typer.Option(None, "--date", help="Date (YYYY-MM-DD) for daily run"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, don't execute"),
+):
+    """Run monthly or daily orchestration"""
+    from multibagger.ops.runner import run_monthly, run_daily
+    from datetime import datetime
+
+    try:
+        if mode == "monthly":
+            if as_of is None:
+                as_of = datetime.now().strftime("%Y-%m")
+            run_monthly(as_of=as_of, dry_run=dry_run)
+
+        elif mode == "daily":
+            check_date = datetime.strptime(date, "%Y-%m-%d").date() if date else None
+            run_daily(check_date=check_date, as_of=as_of, dry_run=dry_run)
+
+        else:
+            console.print(f"[red]Unknown mode: {mode}. Use 'monthly' or 'daily'[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Ops run failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@ops_app.command(name="health")
+def ops_health(
+    as_of: str = typer.Option(None, "--as-of", help="Month to check (YYYY-MM)"),
+    date: str = typer.Option(None, "--date", help="Date for price freshness (YYYY-MM-DD)"),
+):
+    """Run system health checks"""
+    from multibagger.ops.health import check_system_health, print_health_report, save_health_report
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        check_date = datetime.strptime(date, "%Y-%m-%d").date() if date else None
+
+        overall_status, checks = check_system_health(as_of=as_of, check_date=check_date)
+        print_health_report(overall_status, checks, as_of)
+
+        output_file = save_health_report(overall_status, checks, as_of)
+        console.print(f"\n[green]✅ Health report saved: {output_file}[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Health check failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@ops_app.command(name="rotate")
+def ops_rotate(
+    keep_months: int = typer.Option(12, "--keep-months", help="Number of recent months to keep"),
+    keep_alert_days: int = typer.Option(90, "--keep-alert-days", help="Number of days to keep alert files"),
+    dry_run: bool = typer.Option(True, "--dry-run/--execute", help="Preview only (default: True)"),
+):
+    """Rotate (prune) old snapshots safely"""
+    from multibagger.ops.rotation import rotate_snapshots, print_rotation_report, save_rotation_report
+
+    try:
+        report = rotate_snapshots(
+            keep_months=keep_months,
+            keep_alert_days=keep_alert_days,
+            dry_run=dry_run
+        )
+
+        print_rotation_report(report)
+
+        output_file = save_rotation_report(report)
+        console.print(f"\n[green]✅ Rotation report saved: {output_file}[/green]")
+
+        if dry_run:
+            console.print("\n[yellow]⚠ DRY-RUN mode. Use --execute to actually delete files.[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Rotation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+app.add_typer(ops_app, name="ops")
+
+
+# ============================================================================
+# Analytics Command Group
+# ============================================================================
+
+analytics_app = typer.Typer(help="Performance analytics and reporting")
+
+
+@analytics_app.command(name="compute")
+def analytics_compute(
+    as_of: str = typer.Option(None, "--as-of", help="End month (YYYY-MM)"),
+    window: int = typer.Option(36, "--window", help="Lookback window in months"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, don't save reports"),
+):
+    """Compute portfolio performance analytics"""
+    from multibagger.analytics import compute_analytics, generate_reports, print_analytics_summary
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        console.print(f"\n[bold cyan]Computing analytics for {as_of} (window: {window} months)[/bold cyan]\n")
+
+        # Compute analytics
+        analytics = compute_analytics(as_of=as_of, window_months=window)
+
+        # Print summary
+        print_analytics_summary(analytics)
+
+        # Generate reports
+        if not dry_run:
+            outputs = generate_reports(analytics)
+
+            console.print("\n[green]Reports generated:[/green]")
+            for report_type, filepath in outputs.items():
+                console.print(f"  - {report_type}: {filepath}")
+
+            console.print(f"\n[green]✅ Analytics computation complete[/green]")
+        else:
+            console.print("\n[yellow]⚠ DRY-RUN mode. Reports not saved.[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Analytics computation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@analytics_app.command(name="report")
+def analytics_report(
+    as_of: str = typer.Option(None, "--as-of", help="Month (YYYY-MM)"),
+):
+    """Show analytics report from saved data"""
+    from multibagger.analytics import print_analytics_summary
+    from pathlib import Path
+    import json
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        # Load saved analytics JSON
+        analytics_file = Path("snapshots") / as_of / "analytics" / f"analytics_{as_of}.json"
+
+        if not analytics_file.exists():
+            console.print(f"[red]Analytics file not found: {analytics_file}[/red]")
+            console.print("[yellow]Run 'analytics compute' first to generate analytics.[/yellow]")
+            raise typer.Exit(1)
+
+        with open(analytics_file) as f:
+            analytics = json.load(f)
+
+        print_analytics_summary(analytics)
+
+    except Exception as e:
+        console.print(f"[red]❌ Failed to load analytics: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+app.add_typer(analytics_app, name="analytics")
+
+
 if __name__ == "__main__":
     app()
