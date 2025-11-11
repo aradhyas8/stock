@@ -22,6 +22,7 @@ import json
 
 # Import UI service (the ONLY imports from our codebase)
 from multibagger.ui_service import (
+    get_storage_policy,
     get_latest_snapshot,
     get_health_summary,
     list_stage_artifacts,
@@ -120,6 +121,12 @@ def render_sidebar():
         data_sources = config.get("data", {}).get("sources", {})
         enabled = [k for k, v in data_sources.items() if v.get("enabled", False)]
         st.sidebar.text(f"🔌 Sources: {', '.join(enabled) or 'None'}")
+
+        # Storage policy
+        policy = get_storage_policy()
+        policy_icon = "🎯" if policy["persist_finalists_only"] else "💾"
+        policy_status = "Finalists-only" if policy["persist_finalists_only"] else "All tickers"
+        st.sidebar.text(f"{policy_icon} Storage: {policy_status}")
 
     except Exception as e:
         st.sidebar.error(f"Error loading config: {e}")
@@ -363,6 +370,16 @@ def render_research(globals_dict):
             )
     else:
         st.info(f"No research data found for {as_of}. Run the research stage first.")
+
+    # Storage policy note
+    st.markdown("---")
+    policy = get_storage_policy()
+    if policy["persist_finalists_only"]:
+        st.info(
+            "📊 **Storage Policy**: When a stock is confirmed in Top N during research, "
+            "its heavy data (fundamentals & factors) is automatically promoted from staging "
+            "to the canonical store. This promotion is idempotent and happens once per finalist."
+        )
 
 
 # ============================================================================

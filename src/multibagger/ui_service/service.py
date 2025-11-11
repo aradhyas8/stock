@@ -28,6 +28,34 @@ from multibagger.database.schema import get_engine
 from multibagger.database.models import PortfolioRun, PortfolioPosition, PortfolioAction
 
 
+def get_storage_policy() -> Dict:
+    """
+    Get storage policy configuration.
+
+    Returns:
+        {
+            "persist_finalists_only": bool,
+            "keep_price_days": int,
+            "description": str
+        }
+    """
+    config = Config()
+    storage = config.get("storage", {})
+
+    persist_finalists_only = storage.get("persist_finalists_only", False)
+
+    return {
+        "persist_finalists_only": persist_finalists_only,
+        "keep_price_days": storage.get("keep_price_days", 90),
+        "description": (
+            "Finalists-only: Heavy data (fundamentals/factors) routed to staging tables. "
+            "Only Top N finalists promoted to canonical."
+            if persist_finalists_only
+            else "All tickers: All data persisted to canonical tables (legacy mode)."
+        )
+    }
+
+
 def get_latest_snapshot() -> Dict:
     """
     Find the most recent snapshot directory.

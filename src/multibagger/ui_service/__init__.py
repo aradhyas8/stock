@@ -1,6 +1,7 @@
 """UI Service Layer - Thin facade for Streamlit app"""
 
 from .service import (
+    get_storage_policy,
     get_latest_snapshot,
     get_health_summary,
     list_stage_artifacts,
@@ -16,6 +17,7 @@ from .service import (
 )
 
 __all__ = [
+    "get_storage_policy",
     "get_latest_snapshot",
     "get_health_summary",
     "list_stage_artifacts",
