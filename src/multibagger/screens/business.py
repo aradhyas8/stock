@@ -25,15 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_historical_fundamentals(
-    session: Session, ticker_ids: list[int], years: int = 5
+    session: Session, ticker_ids: list[int], years: int = 5, config: Config | None = None
 ) -> pd.DataFrame:
     """
-    Fetch historical fundamentals for business analysis.
+    Fetch historical fundamentals for business analysis (staging-first with canonical fallback).
+
+    When persist_finalists_only=true, prefer fundamentals_temp, fallback to fundamentals.
+    This allows screens to see both finalists (promoted) and non-finalists (staging).
 
     Args:
         session: DB session
         ticker_ids: List of ticker IDs
         years: Number of years of history to fetch
+        config: System configuration (for storage policy)
 
     Returns:
         DataFrame with fundamentals
@@ -41,30 +45,99 @@ def fetch_historical_fundamentals(
     if not ticker_ids:
         return pd.DataFrame()
 
+    # Check storage policy
+    persist_finalists_only = False
+    if config:
+        storage = config.get("storage", {})
+        persist_finalists_only = storage.get("persist_finalists_only", False)
+
     # Build SQL IN clause with dynamic placeholders
     placeholders, params = build_in_clause_params(ticker_ids, param_prefix='ticker')
 
-    query = text(f"""
-        SELECT
-            f.ticker_id,
-            t.symbol,
-            f.period_end,
-            f.fiscal_year,
-            f.revenue,
-            f.gross_profit,
-            f.net_income,
-            f.operating_cash_flow,
-            f.free_cash_flow,
-            f.total_assets,
-            f.current_assets,
-            f.total_liabilities
-        FROM fundamentals f
-        INNER JOIN tickers t ON f.ticker_id = t.id
-        WHERE f.ticker_id IN ({placeholders})
-          AND f.report_type = 'A'
-          AND f.fiscal_year >= (strftime('%Y', 'now') - :years)
-        ORDER BY f.ticker_id, f.fiscal_year DESC
-    """)
+    if persist_finalists_only:
+        # Staging-first: UNION temp and canonical, prefer temp
+        query = text(f"""
+            WITH combined AS (
+                SELECT
+                    f.ticker_id,
+                    t.symbol,
+                    f.period_end,
+                    f.fiscal_year,
+                    f.revenue,
+                    f.gross_profit,
+                    f.net_income,
+                    f.operating_cash_flow,
+                    f.free_cash_flow,
+                    f.total_assets,
+                    f.current_assets,
+                    f.total_liabilities,
+                    1 as priority  -- temp has priority
+                FROM fundamentals_temp f
+                INNER JOIN tickers t ON f.ticker_id = t.id
+                WHERE f.ticker_id IN ({placeholders})
+                  AND f.report_type = 'A'
+                  AND f.fiscal_year >= (strftime('%Y', 'now') - :years)
+
+                UNION ALL
+
+                SELECT
+                    f.ticker_id,
+                    t.symbol,
+                    f.period_end,
+                    f.fiscal_year,
+                    f.revenue,
+                    f.gross_profit,
+                    f.net_income,
+                    f.operating_cash_flow,
+                    f.free_cash_flow,
+                    f.total_assets,
+                    f.current_assets,
+                    f.total_liabilities,
+                    2 as priority  -- canonical as fallback
+                FROM fundamentals f
+                INNER JOIN tickers t ON f.ticker_id = t.id
+                WHERE f.ticker_id IN ({placeholders})
+                  AND f.report_type = 'A'
+                  AND f.fiscal_year >= (strftime('%Y', 'now') - :years)
+            )
+            SELECT
+                ticker_id, symbol, period_end, fiscal_year,
+                revenue, gross_profit, net_income, operating_cash_flow,
+                free_cash_flow, total_assets, current_assets, total_liabilities
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ticker_id, period_end
+                        ORDER BY priority ASC
+                    ) as rn
+                FROM combined
+            )
+            WHERE rn = 1
+            ORDER BY ticker_id, fiscal_year DESC
+        """)
+    else:
+        # Legacy: read from canonical only
+        query = text(f"""
+            SELECT
+                f.ticker_id,
+                t.symbol,
+                f.period_end,
+                f.fiscal_year,
+                f.revenue,
+                f.gross_profit,
+                f.net_income,
+                f.operating_cash_flow,
+                f.free_cash_flow,
+                f.total_assets,
+                f.current_assets,
+                f.total_liabilities
+            FROM fundamentals f
+            INNER JOIN tickers t ON f.ticker_id = t.id
+            WHERE f.ticker_id IN ({placeholders})
+              AND f.report_type = 'A'
+              AND f.fiscal_year >= (strftime('%Y', 'now') - :years)
+            ORDER BY f.ticker_id, f.fiscal_year DESC
+        """)
 
     # Add years to params
     params['years'] = years
@@ -73,7 +146,7 @@ def fetch_historical_fundamentals(
 
     df = pd.DataFrame(result.fetchall(), columns=result.keys())
 
-    logger.info(f"Fetched {len(df)} fundamental records for {len(ticker_ids)} tickers")
+    logger.info(f"Fetched {len(df)} fundamental records for {len(ticker_ids)} tickers (policy: {'staging-first' if persist_finalists_only else 'canonical-only'})")
 
     return df
 
@@ -230,7 +303,7 @@ def screen_business(
     engine = get_engine()
     with Session(engine) as session:
         fundamentals_df = fetch_historical_fundamentals(
-            session, input_df["ticker_id"].tolist(), years=5
+            session, input_df["ticker_id"].tolist(), years=5, config=config
         )
 
     if fundamentals_df.empty:

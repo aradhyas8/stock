@@ -25,15 +25,19 @@ logger = logging.getLogger(__name__)
 
 
 def fetch_factors_for_tickers(
-    session: Session, ticker_ids: list[int], as_of_date: datetime
+    session: Session, ticker_ids: list[int], as_of_date: datetime, config: Config | None = None
 ) -> pd.DataFrame:
     """
-    Fetch factors for given tickers.
+    Fetch factors for given tickers (staging-first with canonical fallback).
+
+    When persist_finalists_only=true, prefer factors_temp, fallback to factors.
+    This allows screens to see both finalists (promoted) and non-finalists (staging).
 
     Args:
         session: DB session
         ticker_ids: List of ticker IDs to fetch
         as_of_date: Only get factors computed as of this date
+        config: System configuration (for storage policy)
 
     Returns:
         DataFrame with factors
@@ -41,25 +45,83 @@ def fetch_factors_for_tickers(
     if not ticker_ids:
         return pd.DataFrame()
 
+    # Check storage policy
+    persist_finalists_only = False
+    if config:
+        storage = config.get("storage", {})
+        persist_finalists_only = storage.get("persist_finalists_only", False)
+
     # Build SQL IN clause with dynamic placeholders
     placeholders, params = build_in_clause_params(ticker_ids, param_prefix='ticker')
 
-    query = text(f"""
-        SELECT
-            f.ticker_id,
-            t.symbol,
-            f.as_of_date,
-            f.roce,
-            f.revenue_growth_5y,
-            f.gross_margin,
-            f.debt_to_equity,
-            f.fcf_yield
-        FROM factors f
-        INNER JOIN tickers t ON f.ticker_id = t.id
-        WHERE f.ticker_id IN ({placeholders})
-          AND f.as_of_date <= :as_of_date
-        ORDER BY f.ticker_id, f.as_of_date DESC
-    """)
+    if persist_finalists_only:
+        # Staging-first: UNION temp and canonical, prefer temp
+        query = text(f"""
+            WITH combined AS (
+                SELECT
+                    f.ticker_id,
+                    t.symbol,
+                    f.as_of_date,
+                    f.roce,
+                    f.revenue_growth_5y,
+                    f.gross_margin,
+                    f.debt_to_equity,
+                    f.fcf_yield,
+                    1 as priority  -- temp has priority
+                FROM factors_temp f
+                INNER JOIN tickers t ON f.ticker_id = t.id
+                WHERE f.ticker_id IN ({placeholders})
+                  AND f.as_of_date <= :as_of_date
+
+                UNION ALL
+
+                SELECT
+                    f.ticker_id,
+                    t.symbol,
+                    f.as_of_date,
+                    f.roce,
+                    f.revenue_growth_5y,
+                    f.gross_margin,
+                    f.debt_to_equity,
+                    f.fcf_yield,
+                    2 as priority  -- canonical as fallback
+                FROM factors f
+                INNER JOIN tickers t ON f.ticker_id = t.id
+                WHERE f.ticker_id IN ({placeholders})
+                  AND f.as_of_date <= :as_of_date
+            )
+            SELECT
+                ticker_id, symbol, as_of_date,
+                roce, revenue_growth_5y, gross_margin, debt_to_equity, fcf_yield
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY ticker_id, as_of_date
+                        ORDER BY priority ASC
+                    ) as rn
+                FROM combined
+            )
+            WHERE rn = 1
+            ORDER BY ticker_id, as_of_date DESC
+        """)
+    else:
+        # Legacy: read from canonical only
+        query = text(f"""
+            SELECT
+                f.ticker_id,
+                t.symbol,
+                f.as_of_date,
+                f.roce,
+                f.revenue_growth_5y,
+                f.gross_margin,
+                f.debt_to_equity,
+                f.fcf_yield
+            FROM factors f
+            INNER JOIN tickers t ON f.ticker_id = t.id
+            WHERE f.ticker_id IN ({placeholders})
+              AND f.as_of_date <= :as_of_date
+            ORDER BY f.ticker_id, f.as_of_date DESC
+        """)
 
     # Add as_of_date to params
     params['as_of_date'] = as_of_date
@@ -72,7 +134,7 @@ def fetch_factors_for_tickers(
     if not df.empty:
         df = df.drop_duplicates(subset=["ticker_id"], keep="first")
 
-    logger.info(f"Fetched factors for {len(df)}/{len(ticker_ids)} tickers")
+    logger.info(f"Fetched factors for {len(df)}/{len(ticker_ids)} tickers (policy: {'staging-first' if persist_finalists_only else 'canonical-only'})")
 
     return df
 
@@ -166,7 +228,7 @@ def screen_quality(
     engine = get_engine()
     with Session(engine) as session:
         factors_df = fetch_factors_for_tickers(
-            session, input_df["ticker_id"].tolist(), as_of_date
+            session, input_df["ticker_id"].tolist(), as_of_date, config
         )
 
     # Merge with input
