@@ -18,6 +18,7 @@ from multibagger.config import Config
 from multibagger.database.models import Research
 from multibagger.database.schema import get_engine
 from multibagger.data.cache import HttpCache
+from multibagger.data.promotion import batch_promote_finalists
 from multibagger.research.business import extract_business_profile
 from multibagger.research.edgar import EDGARFetcher
 from multibagger.research.valuation import compute_dcf_valuation, compute_comparables
@@ -84,9 +85,45 @@ def screen_research(
         console.print(f"[yellow]⚠️  Limiting to {max_reports} reports (config: research.limits.max_reports)[/yellow]")
         ticker_ids = ticker_ids[:max_reports]
         survivors_df = survivors_df.iloc[:max_reports]
-    
+
     logger.info(f"Processing {len(ticker_ids)} survivors for research")
     console.print(f"📊 Processing {len(ticker_ids)} survivors\n")
+
+    # Promotion hook: Promote finalists from staging to canonical (Phase A)
+    storage_config = config.get('storage', {}) if hasattr(config, 'get') else {}
+    persist_finalists_only = storage_config.get('persist_finalists_only', False)
+
+    if persist_finalists_only and ticker_ids:
+        console.print("[yellow]📊 Promoting finalists from staging to canonical...[/yellow]")
+        logger.info(f"Promoting {len(ticker_ids)} finalists (storage policy: finalists-only)")
+
+        engine = get_engine()
+        as_of_date = datetime.strptime(f"{as_of}-01", "%Y-%m-%d").date()
+
+        try:
+            with Session(engine) as session:
+                promotion_results = batch_promote_finalists(
+                    session=session,
+                    ticker_ids=ticker_ids,
+                    as_of_date=as_of_date,
+                    commit=True
+                )
+
+                # Log promotion results
+                total_fundamentals = sum(r.fundamentals_rows for r in promotion_results)
+                total_factors = sum(r.factors_rows for r in promotion_results)
+
+                logger.info(
+                    f"✓ Promoted {len(promotion_results)} finalists: "
+                    f"{total_fundamentals} fundamentals, {total_factors} factors"
+                )
+                console.print(
+                    f"[green]✓ Promoted {len(promotion_results)} finalists "
+                    f"({total_fundamentals} fundamentals, {total_factors} factors)[/green]\n"
+                )
+        except Exception as e:
+            logger.error(f"Promotion failed: {e}")
+            console.print(f"[red]⚠️  Promotion failed: {e}[/red]\n")
     
     # Initialize EDGAR fetcher
     edgar_enabled = research_config.get('filings', {}).get('us_edgar_enabled', True)
