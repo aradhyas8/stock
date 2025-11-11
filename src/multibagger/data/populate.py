@@ -32,6 +32,10 @@ class DataPopulator:
         self.engine = get_engine()
         self.adapter = YFinanceAdapter(batch_size=50, delay_seconds=1.0)
 
+        # Storage policy - determines write routing
+        storage = self.config.get("storage", {})
+        self.persist_finalists_only = storage.get("persist_finalists_only", False)
+
         # Initialize Alpha Vantage adapter if API key is available
         av_api_key = os.getenv('ALPHA_VANTAGE_KEY')
         if av_api_key:
@@ -64,6 +68,27 @@ class DataPopulator:
             }
         }
 
+    def _get_target_tables(self) -> dict[str, str]:
+        """
+        Get target table names based on storage policy.
+
+        When persist_finalists_only=true, writes go to staging tables.
+        Finalists are promoted to canonical in research stage.
+
+        Returns:
+            Dict with 'fundamentals' and 'factors' keys pointing to table names
+        """
+        if self.persist_finalists_only:
+            return {
+                'fundamentals': 'fundamentals_temp',
+                'factors': 'factors_temp'
+            }
+        else:
+            return {
+                'fundamentals': 'fundamentals',
+                'factors': 'factors'
+            }
+
     def populate_all(self, sample_mode: bool = False, sample_size: int = 50) -> dict:
         """
         Populate all data types.
@@ -78,6 +103,13 @@ class DataPopulator:
         self.stats['start_time'] = datetime.utcnow()
 
         console.print("\n[bold blue]🚀 Starting Data Population[/bold blue]\n")
+
+        # Show storage policy
+        if self.persist_finalists_only:
+            console.print("[yellow]📊 Storage Policy: Finalists-only (routing to staging tables)[/yellow]")
+        else:
+            console.print("[green]📊 Storage Policy: All tickers (canonical tables)[/green]")
+        console.print()
 
         # Step 1: Get universe of tickers
         tickers = self._get_tickers(limit=sample_size if sample_mode else None)
@@ -348,6 +380,10 @@ class DataPopulator:
         ticker_id = ticker['id']
         symbol = ticker['symbol']
 
+        # Get target table based on storage policy
+        target_tables = self._get_target_tables()
+        fundamentals_table = target_tables['fundamentals']
+
         with Session(self.engine) as session:
             try:
                 # Extract years from columns (dates)
@@ -398,17 +434,17 @@ class DataPopulator:
                         # No AV adapter, use yfinance values as-is
                         forensics_values = forensics_fields
 
-                    # Check if exists
+                    # Check if exists (using dynamic table name)
                     existing = session.execute(
-                        text("SELECT id FROM fundamentals WHERE ticker_id = :tid AND period_end = :pd"),
+                        text(f"SELECT id FROM {fundamentals_table} WHERE ticker_id = :tid AND period_end = :pd"),
                         {'tid': ticker_id, 'pd': period_end.date()}
                     ).first()
 
                     if existing:
                         # Update existing record with forensics fields
                         session.execute(
-                            text("""
-                                UPDATE fundamentals
+                            text(f"""
+                                UPDATE {fundamentals_table}
                                 SET receivables = :receivables,
                                     ppe = :ppe,
                                     depreciation = :depreciation,
@@ -433,38 +469,53 @@ class DataPopulator:
                         )
                         self.stats['fundamentals_inserted'] += 1
                     else:
-                        # Insert new record
-                        fundamental = Fundamental(
-                            ticker_id=ticker_id,
-                            period_end=period_end.date(),
-                            report_type='A',
-                            fiscal_year=period_end.year,
-                            # Income statement
-                            revenue=self._safe_float(financials.get('Total Revenue')),
-                            gross_profit=self._safe_float(financials.get('Gross Profit')),
-                            operating_income=self._safe_float(financials.get('Operating Income')),
-                            net_income=self._safe_float(financials.get('Net Income')),
-                            ebitda=self._safe_float(financials.get('EBITDA')),
-                            # Balance sheet
-                            total_assets=self._safe_float(balance.get('Total Assets')),
-                            current_assets=self._safe_float(balance.get('Current Assets')),
-                            total_liabilities=self._safe_float(balance.get('Total Liabilities Net Minority Interest')),
-                            current_liabilities=self._safe_float(balance.get('Current Liabilities')),
-                            shareholders_equity=self._safe_float(balance.get('Stockholders Equity')),
-                            # Cash flow
-                            operating_cash_flow=self._safe_float(cashflow.get('Operating Cash Flow')),
-                            free_cash_flow=self._safe_float(cashflow.get('Free Cash Flow')),
-                            # Forensics fields (Phase 3.5 with AV fallback)
-                            receivables=forensics_values['receivables'],
-                            ppe=forensics_values['ppe'],
-                            depreciation=forensics_values['depreciation'],
-                            sga_expense=forensics_values['sga_expense'],
-                            cash=forensics_values['cash'],
-                            short_term_debt=forensics_values['short_term_debt'],
-                            retained_earnings=forensics_values['retained_earnings'],
+                        # Insert new record (using raw SQL for dynamic table routing)
+                        session.execute(
+                            text(f"""
+                                INSERT INTO {fundamentals_table} (
+                                    ticker_id, period_end, report_type, fiscal_year,
+                                    revenue, gross_profit, operating_income, net_income, ebitda,
+                                    total_assets, current_assets, total_liabilities, current_liabilities,
+                                    shareholders_equity, operating_cash_flow, free_cash_flow,
+                                    receivables, ppe, depreciation, sga_expense, cash,
+                                    short_term_debt, retained_earnings,
+                                    created_at, updated_at
+                                ) VALUES (
+                                    :ticker_id, :period_end, :report_type, :fiscal_year,
+                                    :revenue, :gross_profit, :operating_income, :net_income, :ebitda,
+                                    :total_assets, :current_assets, :total_liabilities, :current_liabilities,
+                                    :shareholders_equity, :operating_cash_flow, :free_cash_flow,
+                                    :receivables, :ppe, :depreciation, :sga_expense, :cash,
+                                    :short_term_debt, :retained_earnings,
+                                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                                )
+                            """),
+                            {
+                                'ticker_id': ticker_id,
+                                'period_end': period_end.date(),
+                                'report_type': 'A',
+                                'fiscal_year': period_end.year,
+                                'revenue': self._safe_float(financials.get('Total Revenue')),
+                                'gross_profit': self._safe_float(financials.get('Gross Profit')),
+                                'operating_income': self._safe_float(financials.get('Operating Income')),
+                                'net_income': self._safe_float(financials.get('Net Income')),
+                                'ebitda': self._safe_float(financials.get('EBITDA')),
+                                'total_assets': self._safe_float(balance.get('Total Assets')),
+                                'current_assets': self._safe_float(balance.get('Current Assets')),
+                                'total_liabilities': self._safe_float(balance.get('Total Liabilities Net Minority Interest')),
+                                'current_liabilities': self._safe_float(balance.get('Current Liabilities')),
+                                'shareholders_equity': self._safe_float(balance.get('Stockholders Equity')),
+                                'operating_cash_flow': self._safe_float(cashflow.get('Operating Cash Flow')),
+                                'free_cash_flow': self._safe_float(cashflow.get('Free Cash Flow')),
+                                'receivables': forensics_values['receivables'],
+                                'ppe': forensics_values['ppe'],
+                                'depreciation': forensics_values['depreciation'],
+                                'sga_expense': forensics_values['sga_expense'],
+                                'cash': forensics_values['cash'],
+                                'short_term_debt': forensics_values['short_term_debt'],
+                                'retained_earnings': forensics_values['retained_earnings'],
+                            }
                         )
-
-                        session.add(fundamental)
                         self.stats['fundamentals_inserted'] += 1
 
                 session.commit()
@@ -479,6 +530,10 @@ class DataPopulator:
         """Compute and insert/update factors from fundamentals"""
         success_count = 0
 
+        # Get target table based on storage policy
+        target_tables = self._get_target_tables()
+        factors_table = target_tables['factors']
+
         with Session(self.engine) as session:
             for ticker in tickers:
                 try:
@@ -486,15 +541,15 @@ class DataPopulator:
                     if factors:
                         # Check if factors exist for this ticker and as_of_date
                         existing = session.execute(
-                            text("SELECT id FROM factors WHERE ticker_id = :tid AND as_of_date = :date"),
+                            text(f"SELECT id FROM {factors_table} WHERE ticker_id = :tid AND as_of_date = :date"),
                             {'tid': factors.ticker_id, 'date': factors.as_of_date}
                         ).first()
 
                         if existing:
                             # Update existing record
                             session.execute(
-                                text("""
-                                    UPDATE factors
+                                text(f"""
+                                    UPDATE {factors_table}
                                     SET roce = :roce,
                                         revenue_growth_5y = :rev_growth,
                                         gross_margin = :gm,
@@ -512,7 +567,28 @@ class DataPopulator:
                                 }
                             )
                         else:
-                            session.add(factors)
+                            # Insert new record (using raw SQL for dynamic table routing)
+                            session.execute(
+                                text(f"""
+                                    INSERT INTO {factors_table} (
+                                        ticker_id, as_of_date, roce, revenue_growth_5y,
+                                        gross_margin, debt_to_equity,
+                                        created_at, updated_at
+                                    ) VALUES (
+                                        :ticker_id, :as_of_date, :roce, :revenue_growth_5y,
+                                        :gross_margin, :debt_to_equity,
+                                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                                    )
+                                """),
+                                {
+                                    'ticker_id': factors.ticker_id,
+                                    'as_of_date': factors.as_of_date,
+                                    'roce': factors.roce,
+                                    'revenue_growth_5y': factors.revenue_growth_5y,
+                                    'gross_margin': factors.gross_margin,
+                                    'debt_to_equity': factors.debt_to_equity,
+                                }
+                            )
 
                         success_count += 1
                 except Exception as e:
@@ -525,13 +601,17 @@ class DataPopulator:
 
     def _calculate_factors(self, session: Session, ticker_id: int) -> Factor | None:
         """Calculate factor metrics from fundamentals"""
-        # Fetch fundamentals
+        # Get target table based on storage policy
+        target_tables = self._get_target_tables()
+        fundamentals_table = target_tables['fundamentals']
+
+        # Fetch fundamentals from appropriate table
         result = session.execute(
-            text("""
+            text(f"""
                 SELECT period_end, revenue, gross_profit, net_income,
                        total_assets, current_liabilities, total_liabilities,
                        shareholders_equity, free_cash_flow
-                FROM fundamentals
+                FROM {fundamentals_table}
                 WHERE ticker_id = :tid
                 ORDER BY period_end DESC
                 LIMIT 5
