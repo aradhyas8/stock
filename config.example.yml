@@ -304,3 +304,8 @@ analytics:
 
   attribution:
     top_n_positions: 5              # Number of top contributors/detractors to show
+
+# Storage Policy Configuration (Phase A)
+storage:
+  persist_finalists_only: true      # Route non-finalists to staging tables (fundamentals_temp, factors_temp)
+  keep_price_days: 90               # Days of price history to retain (future: Phase B purging)
