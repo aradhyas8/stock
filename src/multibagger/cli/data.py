@@ -8,8 +8,10 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
+from multibagger.config import get_config
 from multibagger.data.config import DataConfig
 from multibagger.data.fetcher import DataFetcher
+from multibagger.data.populate import DataPopulator
 
 app = typer.Typer(
     name="data",
@@ -276,5 +278,247 @@ def fetch_prices(
         raise typer.Exit(1)
 
 
-if __name__ == "__main__":
-    app()
+@app.command()
+def populate(
+    sample: bool = typer.Option(
+        False, "--sample", help="Sample mode: process only 50 tickers for testing"
+    ),
+    sample_size: int = typer.Option(
+        50, "--sample-size", help="Number of tickers in sample mode"
+    ),
+) -> None:
+    """Populate database with real market data from APIs"""
+    console.print("[blue]📦 Populating Database with Market Data[/blue]")
+
+    try:
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population
+        stats = populator.populate_all(sample_mode=sample, sample_size=sample_size)
+
+        if stats['errors']:
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} errors[/yellow]")
+            raise typer.Exit(1)
+        else:
+            console.print("\n[green]✅ Data population complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Population failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def populate_survivors(
+    csv_path: str = typer.Argument(..., help="Path to screening stage CSV"),
+    stage_name: str = typer.Option(
+        "Screening Stage", "--stage-name", help="Stage name for logging"
+    ),
+) -> None:
+    """
+    Populate fundamentals/factors for survivors from a screening CSV.
+
+    This enables survivors-driven data fetching where we only update
+    data for tickers that passed a screening stage.
+
+    Example:
+        multibagger data populate-survivors snapshots/2025-11/stage_business_2025-11.csv --stage-name "Stage 2.3"
+    """
+    console.print(f"[blue]📦 Populating Data for Survivors[/blue]")
+
+    try:
+        # Validate CSV path
+        csv_file = Path(csv_path)
+        if not csv_file.exists():
+            console.print(f"[red]❌ CSV file not found: {csv_path}[/red]")
+            raise typer.Exit(1)
+
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population for survivors
+        stats = populator.populate_from_survivors_csv(
+            csv_path=str(csv_file),
+            stage_name=stage_name
+        )
+
+        if stats.get('errors') and len(stats['errors']) > 5:
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} errors[/yellow]")
+            raise typer.Exit(1)
+        elif stats.get('errors'):
+            console.print(f"\n[yellow]⚠️  Completed with {len(stats['errors'])} minor errors[/yellow]")
+        else:
+            console.print("\n[green]✅ Data population complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Population failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def backfill_forensics(
+    as_of: str = typer.Option(..., "--as-of", help="As-of month (YYYY-MM)"),
+    csv_path: str = typer.Option(None, "--csv", help="Custom CSV path (default: auto-detect from as-of)"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", help="Output directory for coverage report")
+) -> None:
+    """
+    Backfill forensics fields for screening survivors using yfinance + Alpha Vantage fallback.
+
+    This command:
+    1. Loads survivors from stage_business_<as-of>.csv
+    2. Fetches fundamentals from yfinance (fast)
+    3. Falls back to Alpha Vantage for missing forensics fields (rate-limited)
+    4. UPSERTs to fundamentals table
+    5. Generates coverage report JSON
+
+    Example:
+        multibagger data backfill-forensics --as-of 2025-11
+    """
+    import json
+    from pathlib import Path
+    import os
+
+    console.print(f"\n[bold blue]🔄 Backfilling Forensics Fields for {as_of}[/bold blue]\n")
+
+    # Determine CSV path
+    if csv_path is None:
+        csv_path = f"{output_dir}/{as_of}/stage_business_{as_of}.csv"
+
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        console.print(f"[red]❌ CSV file not found: {csv_path}[/red]")
+        console.print(f"[yellow]Run 'multibagger screen business --as-of {as_of}' first[/yellow]")
+        raise typer.Exit(1)
+
+    # Check for Alpha Vantage API key
+    if not os.getenv('ALPHA_VANTAGE_KEY'):
+        console.print("[yellow]⚠️  ALPHA_VANTAGE_KEY not set - fallback disabled[/yellow]")
+        console.print("[yellow]Set ALPHA_VANTAGE_KEY in .env to enable Alpha Vantage fallback[/yellow]")
+        console.print("[yellow]Continuing with yfinance only...[/yellow]\n")
+
+    try:
+        config = get_config()
+        populator = DataPopulator(config)
+
+        # Run population with fallback
+        stats = populator.populate_from_survivors_csv(
+            csv_path=str(csv_file),
+            stage_name=f"Stage 2.3 Business Filter ({as_of})"
+        )
+
+        # Generate coverage report
+        report_dir = Path(output_dir) / as_of
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / "forensics_coverage.json"
+
+        # Calculate overall coverage
+        field_coverage = stats.get('field_coverage', {})
+        total_by_field = {}
+        overall_totals = {'with_data': 0, 'total_fields': 0}
+
+        for field_name, counts in field_coverage.items():
+            total = counts.get('yfinance', 0) + counts.get('alpha_vantage', 0) + counts.get('missing', 0)
+            with_data = counts.get('yfinance', 0) + counts.get('alpha_vantage', 0)
+            coverage_pct = (with_data / total * 100) if total > 0 else 0
+
+            total_by_field[field_name] = {
+                'yfinance': counts.get('yfinance', 0),
+                'alpha_vantage': counts.get('alpha_vantage', 0),
+                'missing': counts.get('missing', 0),
+                'coverage_pct': round(coverage_pct, 1)
+            }
+
+            overall_totals['with_data'] += with_data
+            overall_totals['total_fields'] += total
+
+        overall_coverage_pct = (
+            (overall_totals['with_data'] / overall_totals['total_fields'] * 100)
+            if overall_totals['total_fields'] > 0 else 0
+        )
+
+        # Build coverage report
+        from datetime import datetime as dt
+        coverage_report = {
+            'as_of': as_of,
+            'timestamp': dt.utcnow().isoformat(),
+            'csv_path': str(csv_file),
+            'field_coverage': total_by_field,
+            'overall_coverage_pct': round(overall_coverage_pct, 1),
+            'fundamentals_fetched': stats.get('fundamentals_fetched', 0),
+            'fundamentals_inserted': stats.get('fundamentals_inserted', 0)
+        }
+
+        # Add AV stats if available
+        if populator.av_adapter and hasattr(populator.av_adapter, 'stats'):
+            coverage_report['alpha_vantage_stats'] = populator.av_adapter.stats.copy()
+
+        # Write JSON report
+        with open(report_path, 'w') as f:
+            json.dump(coverage_report, f, indent=2)
+
+        console.print(f"\n[green]✅ Coverage report saved to {report_path}[/green]")
+
+        # Print summary
+        console.print(f"\n[bold cyan]📊 Overall Forensics Coverage: {overall_coverage_pct:.1f}%[/bold cyan]")
+
+        if overall_coverage_pct >= 90:
+            console.print("[green]✅ Target coverage (≥90%) achieved![/green]")
+        else:
+            console.print(f"[yellow]⚠️  Coverage below 90% target ({overall_coverage_pct:.1f}%)[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Backfill failed: {e}[/red]")
+        raise typer.Exit(1) from e
+
+
+@app.command()
+def validate() -> None:
+    """Validate data coverage and quality"""
+    console.print("[blue]🔍 Validating Data Coverage[/blue]")
+
+    try:
+        from multibagger.database.schema import get_engine
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+
+        engine = get_engine()
+
+        with Session(engine) as session:
+            # Get counts
+            ticker_count = session.execute(text("SELECT COUNT(*) FROM tickers WHERE active = 1")).scalar()
+            price_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM prices")).scalar()
+            fundamental_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM fundamentals")).scalar()
+            factor_count = session.execute(text("SELECT COUNT(DISTINCT ticker_id) FROM factors")).scalar()
+
+            # Calculate coverage
+            price_coverage = (price_count / ticker_count * 100) if ticker_count > 0 else 0
+            fundamental_coverage = (fundamental_count / ticker_count * 100) if ticker_count > 0 else 0
+            factor_coverage = (factor_count / ticker_count * 100) if ticker_count > 0 else 0
+
+            # Display results
+            table = Table(title="Data Coverage Report")
+            table.add_column("Data Type", style="cyan")
+            table.add_column("Tickers", style="magenta")
+            table.add_column("Coverage", style="green")
+            table.add_column("Status", style="yellow")
+
+            table.add_row("Universe", f"{ticker_count}", "100%", "✅")
+            table.add_row("Prices", f"{price_count}", f"{price_coverage:.1f}%",
+                         "✅" if price_coverage >= 95 else "⚠️")
+            table.add_row("Fundamentals", f"{fundamental_count}", f"{fundamental_coverage:.1f}%",
+                         "✅" if fundamental_coverage >= 10 else "⚠️")
+            table.add_row("Factors", f"{factor_count}", f"{factor_coverage:.1f}%",
+                         "✅" if factor_coverage >= 10 else "⚠️")
+
+            console.print("\n")
+            console.print(table)
+
+            # Overall status
+            if price_coverage >= 95 and fundamental_coverage >= 10:
+                console.print("\n[green]✅ Data quality is good - ready for screening![/green]")
+            else:
+                console.print("\n[yellow]⚠️  Data coverage below targets - run 'data populate' first[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Validation failed: {e}[/red]")
+        raise typer.Exit(1) from e

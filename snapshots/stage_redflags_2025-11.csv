@@ -1,0 +1,11 @@
+ticker_id,symbol,name,exchange_code,beneish_m_score,altman_z_score,accruals_ratio,forensics_score,governance_score,sentiment_score,composite_score,first_fail_reason
+3,GOOGL,Alphabet Inc.,NASDAQ,,,,0,0.0,0.0,0.0,
+8,JPM,JPMorgan Chase & Co.,NYSE,,,,0,0.0,0.0,0.0,
+11,WMT,Walmart Inc.,NYSE,,,,0,0.0,0.0,0.0,
+12,PG,Procter & Gamble Co.,NYSE,,,,0,0.0,0.0,0.0,
+17,INTC,Intel Corporation,NASDAQ,,,,0,0.0,0.0,0.0,
+20,COST,Costco Wholesale Corporation,NASDAQ,,,,0,0.0,0.0,0.0,
+21,AVGO,Broadcom Inc.,NASDAQ,,,,0,0.0,0.0,0.0,
+23,QCOM,QUALCOMM Inc.,NASDAQ,,,,0,0.0,0.0,0.0,
+26,UPS,United Parcel Service Inc.,NYSE,,,,0,0.0,0.0,0.0,
+27,BA,The Boeing Company,NYSE,,,,0,0.0,0.0,0.0,

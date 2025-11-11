@@ -1,0 +1,59 @@
+# CLI Help - Updated for Phase 4
+
+## screen command (with research stage)
+
+```
+Usage: python -m multibagger.cli.main screen [OPTIONS] STAGE
+
+Run screening pipeline stages
+
+╭─ Arguments ──────────────────────────────────────────────────────────────╮
+│ *    stage      TEXT  Stage: fast, quality, business, redflags,         │
+│                       research, or all                                   │
+│                       [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────╮
+│ --as-of           TEXT  Run as-of YYYY-MM (defaults to current month)   │
+│ --output-dir  -o  TEXT  Output directory [default: snapshots]           │
+│ --help                  Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────╯
+```
+
+## Examples
+
+```bash
+# Run individual stages
+multibagger screen fast --as-of 2025-11
+multibagger screen quality --as-of 2025-11
+multibagger screen business --as-of 2025-11
+multibagger screen redflags --as-of 2025-11
+multibagger screen research --as-of 2025-11
+
+# Run full pipeline
+multibagger screen all --as-of 2025-11
+
+# Custom output directory
+multibagger screen research --as-of 2025-11 --output-dir custom_snapshots
+```
+
+## Changes from Previous Version
+
+- **Added:** `research` stage for DCF valuation and report generation
+- **No changes** to existing stages (fast, quality, business, redflags)
+- **No changes** to flags (--as-of, --output-dir)
+
+## Output Structure
+
+```
+snapshots/
+  2025-11/
+    stage_fast_2025-11.csv          # Quick screen survivors
+    stage_quality_2025-11.csv       # Quality filter survivors
+    stage_business_2025-11.csv      # Business filter survivors
+    stage_redflags_2025-11.csv      # Red flags survivors
+    stage_research_2025-11.csv      # Research with valuations (NEW)
+    research_metrics.json           # Coverage stats (NEW)
+    reports/                        # Individual reports (NEW)
+      TICKER1.md
+      TICKER2.md
+```

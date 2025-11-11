@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -1548,7 +1548,6 @@ dev = [
     { name = "deptry" },
     { name = "interrogate" },
     { name = "mypy" },
-    { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
@@ -1597,7 +1596,6 @@ dev = [
     { name = "deptry", specifier = ">=0.23.1" },
     { name = "interrogate", specifier = ">=1.7.0" },
     { name = "mypy", specifier = ">=1.18.2" },
-    { name = "pytest", specifier = ">=7.4.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "ruff", specifier = ">=0.14.4" },
 ]

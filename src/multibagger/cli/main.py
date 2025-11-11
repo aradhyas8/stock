@@ -117,10 +117,111 @@ def monthly(
 
 
 @app.command()
-def monitor() -> None:
+def monitor(
+    action: str = typer.Argument("daily", help="Action: daily"),
+    date: str = typer.Option(None, "--date", help="Price date (YYYY-MM-DD), defaults to latest"),
+    as_of: str = typer.Option(None, "--as-of", help="Portfolio run (YYYY-MM), defaults to latest"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", "-o", help="Output directory"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print alerts without writing files"),
+) -> None:
     """Run portfolio monitoring checks"""
-    console.print("[blue]🔍 Portfolio Monitoring[/blue]")
-    console.print("Monitoring system not implemented yet - Phase 5 feature")
+    console.print("[blue]🔍 Portfolio Monitoring[/blue]\n")
+
+    if action != "daily":
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: daily")
+        raise typer.Exit(1)
+
+    try:
+        from multibagger.monitor import run_daily_monitor
+
+        config = get_config()
+
+        # Run monitor
+        results = run_daily_monitor(
+            config=config,
+            date_str=date,
+            as_of=as_of,
+            output_dir=output_dir,
+            dry_run=dry_run
+        )
+
+        if results['status'] == 'no_positions':
+            console.print(f"[yellow]⚠️  No positions found for monitoring[/yellow]")
+            console.print(f"Portfolio as of: {results['as_of']}")
+            raise typer.Exit(0)
+
+        # Display summary
+        console.print(f"[cyan]Portfolio as of:[/cyan] {results['as_of']}")
+        console.print(f"[cyan]Price date:[/cyan] {results['price_date']}")
+        console.print(f"[cyan]Positions checked:[/cyan] {results['positions_checked']}\n")
+
+        # Display alerts table
+        alerts_df = results['alerts']
+
+        if not alerts_df.empty:
+            # Group by signal
+            signal_counts = alerts_df['signal'].value_counts()
+
+            metrics_table = Table(title="Alert Summary")
+            metrics_table.add_column("Signal", style="yellow")
+            metrics_table.add_column("Count", justify="right", style="red")
+
+            for signal in ['STOP_LOSS', 'THESIS_RISK', 'NEAR_TARGET']:
+                if signal in signal_counts:
+                    metrics_table.add_column = f"{signal}: {signal_counts[signal]}"
+                    metrics_table.add_row(signal, str(signal_counts[signal]))
+
+            console.print(metrics_table)
+            console.print()
+
+            # Display detailed alerts
+            alerts_table = Table(title="Detailed Alerts", show_header=True)
+            alerts_table.add_column("Symbol", style="cyan")
+            alerts_table.add_column("Signal", style="yellow")
+            alerts_table.add_column("Current", justify="right")
+            alerts_table.add_column("Entry", justify="right")
+            alerts_table.add_column("Target", justify="right")
+            alerts_table.add_column("Weight %", justify="right")
+            alerts_table.add_column("Reason", style="dim")
+
+            for _, alert in alerts_df.head(20).iterrows():  # Show first 20
+                alerts_table.add_row(
+                    alert['symbol'],
+                    alert['signal'],
+                    f"${alert['current_price']:.2f}",
+                    f"${alert['entry_price']:.2f}" if alert['entry_price'] else "-",
+                    f"${alert['target_price']:.2f}" if alert['target_price'] else "-",
+                    f"{alert['held_weight_pct']:.1f}",
+                    alert['reason'][:50] + "..." if len(alert['reason']) > 50 else alert['reason']
+                )
+
+            console.print(alerts_table)
+
+            if len(alerts_df) > 20:
+                console.print(f"\n[dim]... and {len(alerts_df) - 20} more alerts[/dim]")
+
+        else:
+            console.print("[green]✅ No alerts - all positions within normal bounds[/green]")
+
+        # Output files
+        if not dry_run and results['output_paths']:
+            console.print(f"\n[dim]Outputs:[/dim]")
+            console.print(f"  Alerts CSV: {results['output_paths']['alerts_csv']}")
+            console.print(f"  Metrics JSON: {results['output_paths']['metrics_json']}")
+        elif dry_run:
+            console.print("\n[yellow]DRY RUN: No files written[/yellow]")
+
+        console.print(f"\n[green]✅ Monitoring complete[/green]")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ File not found: {e}[/red]")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        console.print(f"[red]❌ Monitoring failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -255,10 +356,76 @@ def universe(
 
 
 @app.command()
-def screen() -> None:
-    """Run screening pipeline only"""
-    console.print("[blue]🔬 Stock Screening[/blue]")
-    console.print("Screening engine not implemented yet - Phase 2 feature")
+def screen(
+    stage: str = typer.Argument(..., help="Stage: fast, quality, business, redflags, research, or all"),
+    as_of: str = typer.Option(
+        None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"
+    ),
+    output_dir: str = typer.Option(
+        "snapshots", "--output-dir", "-o", help="Output directory"
+    ),
+) -> None:
+    """Run screening pipeline stages"""
+    console.print(f"[blue]🔬 Running {stage.upper()} Screen[/blue]")
+
+    try:
+        from multibagger.screens.fast import screen_fast
+        from multibagger.screens.quality import screen_quality
+        from multibagger.screens.business import screen_business
+        from multibagger.screens.redflags import screen_redflags
+        from multibagger.screens.research import screen_research
+
+        config = get_config()
+
+        if stage == "fast" or stage == "all":
+            console.print("\n[cyan]Stage 2.1: Quick Screener[/cyan]")
+            result = screen_fast(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
+
+        if stage == "quality" or stage == "all":
+            console.print("\n[cyan]Stage 2.2: Quality Filter[/cyan]")
+            result = screen_quality(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
+
+        if stage == "business" or stage == "all":
+            console.print("\n[cyan]Stage 2.3: Business Filter[/cyan]")
+            result = screen_business(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"✅ {result.total_survivors:,} survivors (eliminated {result.total_input - result.total_survivors:,})")
+
+        if stage == "redflags" or stage == "all":
+            console.print("\n[cyan]Stage 2.4: Red Flag Detection[/cyan]")
+            result = screen_redflags(config, as_of=as_of, output_dir=output_dir)
+
+            # Display detailed summary
+            console.print(f"\n[bold]Red Flag Analysis Summary:[/bold]")
+            console.print(f"  Input tickers: {result.total_input:,}")
+            console.print(f"  Survivors: {result.total_survivors:,} ({result.total_survivors/result.total_input*100:.1f}%)")
+            console.print(f"  Eliminated: {result.total_input - result.total_survivors:,}")
+            console.print(f"  Runtime: {result.runtime_seconds:.2f}s")
+
+            # Show elimination breakdown
+            if result.removed_by_rule:
+                console.print(f"\n[bold]Elimination Breakdown:[/bold]")
+                for rule, count in result.removed_by_rule.items():
+                    console.print(f"  {rule}: {count:,} tickers")
+
+            console.print(f"\n✅ Red flag detection complete")
+
+        if stage == "research" or stage == "all":
+            console.print("\n[cyan]Stage 2.5: Research & Valuation[/cyan]")
+            result = screen_research(config, as_of=as_of, output_dir=output_dir)
+            console.print(f"\n✅ Generated {result.total_survivors} research reports")
+
+        if stage not in ["fast", "quality", "business", "redflags", "research", "all"]:
+            console.print(f"[red]Unknown stage: {stage}[/red]")
+            console.print("Available stages: fast, quality, business, redflags, research, all")
+            raise typer.Exit(1)
+
+        console.print("\n[green]✅ Screening complete![/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Screening failed: {e}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -490,6 +657,372 @@ def db_snapshot(
     except Exception as e:
         console.print(f"[red]❌ Snapshot creation failed: {e}[/red]")
         raise typer.Exit(1) from e
+
+
+@app.command()
+def portfolio(
+    action: str = typer.Argument(..., help="Action: reconcile"),
+    holdings_file: str = typer.Option(..., "--holdings", "-h", help="Path to holdings CSV/JSON file"),
+    as_of: str = typer.Option(None, "--as-of", help="Run as-of YYYY-MM (defaults to current month)"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", "-o", help="Output directory"),
+    top_n: int = typer.Option(15, "--top-n", help="Top N candidates from research"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print actions without writing files"),
+) -> None:
+    """Portfolio reconciliation and rebalancing"""
+    console.print("[blue]📊 Portfolio Reconciliation[/blue]")
+
+    if action != "reconcile":
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: reconcile")
+        raise typer.Exit(1)
+
+    try:
+        from multibagger.portfolio import (
+            reconcile_portfolio,
+            save_reconciliation_outputs,
+            print_reconciliation_summary,
+        )
+
+        config = get_config()
+
+        # Default as_of to current month
+        if as_of is None:
+            as_of = datetime.datetime.now().strftime("%Y-%m")
+
+        console.print(f"\n[cyan]Reconciling portfolio as of {as_of}[/cyan]")
+        console.print(f"Holdings file: {holdings_file}")
+        console.print(f"Top N candidates: {top_n}\n")
+
+        # Run reconciliation
+        results = reconcile_portfolio(
+            config=config,
+            as_of=as_of,
+            holdings_file=holdings_file,
+            output_dir=output_dir,
+            top_n=top_n
+        )
+
+        if results['status'] != 'success':
+            console.print(f"[red]❌ Reconciliation failed: {results.get('reason', 'Unknown error')}[/red]")
+            raise typer.Exit(1)
+
+        # Save outputs (unless dry-run)
+        if not dry_run:
+            output_paths = save_reconciliation_outputs(results, as_of, output_dir)
+        else:
+            console.print("\n[yellow]DRY RUN: No files written[/yellow]")
+            output_paths = {}
+
+        # Print summary
+        print_reconciliation_summary(results, output_paths)
+
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ File not found: {e}[/red]")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        console.print(f"[red]❌ Portfolio reconciliation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@app.command(name="portfolio-show")
+def portfolio_show(
+    as_of: str = typer.Option(..., "--as-of", help="Show portfolio for YYYY-MM"),
+) -> None:
+    """Show saved portfolio reconciliation from database (no recompute)"""
+    console.print(f"[blue]📊 Portfolio Report for {as_of}[/blue]\n")
+
+    try:
+        from datetime import datetime as dt
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+        from multibagger.database.schema import get_engine
+        from multibagger.database.models import PortfolioRun, PortfolioPosition, PortfolioAction
+        import json
+
+        # Convert to date
+        as_of_date = dt.strptime(f"{as_of}-01", "%Y-%m-%d").date()
+
+        engine = get_engine()
+        with Session(engine) as session:
+            # Fetch run
+            run = session.query(PortfolioRun).filter_by(as_of_date=as_of_date).first()
+
+            if not run:
+                console.print(f"[red]❌ No portfolio run found for {as_of}[/red]")
+                console.print("Run 'portfolio reconcile' first to create a portfolio.")
+                raise typer.Exit(1)
+
+            # Parse metrics
+            metrics = json.loads(run.metrics_json)
+
+            # Display metrics
+            metrics_table = Table(title=f"Portfolio Metrics - {as_of}", show_header=True)
+            metrics_table.add_column("Metric", style="cyan")
+            metrics_table.add_column("Value", style="green")
+
+            metrics_table.add_row("Turnover", f"{metrics['turnover_pct']}%")
+            metrics_table.add_row("Position Count", str(metrics['position_count']))
+
+            for action, count in metrics['action_counts'].items():
+                metrics_table.add_row(f"{action.title()} Actions", str(count))
+
+            console.print(metrics_table)
+
+            # Display config assumptions
+            console.print(f"\n[dim]Config: max_positions={metrics['config_assumptions']['max_positions']}, "
+                         f"max_weight={metrics['config_assumptions']['max_weight_pct']}%, "
+                         f"min_weight={metrics['config_assumptions']['min_weight_pct']}%, "
+                         f"drift_tolerance={metrics['config_assumptions']['drift_tolerance_pct']*100}%[/dim]\n")
+
+            # Fetch positions
+            positions = session.query(PortfolioPosition).filter_by(run_id=run.id).order_by(
+                PortfolioPosition.weight_pct.desc()
+            ).all()
+
+            # Display positions
+            positions_table = Table(title="Target Portfolio Positions", show_header=True)
+            positions_table.add_column("Symbol", style="cyan")
+            positions_table.add_column("Weight %", justify="right", style="green")
+            positions_table.add_column("Entry Price", justify="right")
+            positions_table.add_column("Target Price", justify="right")
+            positions_table.add_column("Upside %", justify="right")
+            positions_table.add_column("Conviction", justify="right")
+
+            total_weight = 0.0
+            for pos in positions:
+                notes = json.loads(pos.notes_json) if pos.notes_json else {}
+                symbol = notes.get('symbol', f"ID:{pos.ticker_id}")
+                upside = notes.get('upside_pct', 0)
+                total_weight += float(pos.weight_pct)
+
+                positions_table.add_row(
+                    symbol,
+                    f"{pos.weight_pct:.2f}",
+                    f"${pos.entry_price:.2f}" if pos.entry_price else "-",
+                    f"${pos.target_price:.2f}" if pos.target_price else "-",
+                    f"{upside:.1f}%" if upside else "-",
+                    f"{pos.conviction_score:.0f}" if pos.conviction_score else "-"
+                )
+
+            console.print(positions_table)
+            console.print(f"\n[dim]Total Weight: {total_weight:.2f}%[/dim]")
+
+            # Fetch actions
+            actions = session.query(PortfolioAction).filter_by(run_id=run.id).all()
+
+            if actions:
+                console.print("\n")
+                actions_table = Table(title="Recommended Actions", show_header=True)
+                actions_table.add_column("Action", style="yellow")
+                actions_table.add_column("Symbol", style="cyan")
+                actions_table.add_column("Reason", style="white")
+
+                for action in actions:
+                    details = json.loads(action.details_json) if action.details_json else {}
+                    symbol = details.get('symbol', f"ID:{action.ticker_id}" if action.ticker_id else "CASH")
+                    actions_table.add_row(
+                        action.action,
+                        symbol,
+                        action.reason or "-"
+                    )
+
+                console.print(actions_table)
+
+            console.print(f"\n[green]✅ Portfolio snapshot from database (run_id={run.id})[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Failed to fetch portfolio: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+# ============================================================================
+# Ops Command Group
+# ============================================================================
+
+ops_app = typer.Typer(help="Operational commands (runners, health, rotation)")
+
+
+@ops_app.command(name="run")
+def ops_run(
+    mode: str = typer.Argument(..., help="Mode: monthly or daily"),
+    as_of: str = typer.Option(None, "--as-of", help="Month (YYYY-MM) for monthly run"),
+    date: str = typer.Option(None, "--date", help="Date (YYYY-MM-DD) for daily run"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, don't execute"),
+):
+    """Run monthly or daily orchestration"""
+    from multibagger.ops.runner import run_monthly, run_daily
+    from datetime import datetime
+
+    try:
+        if mode == "monthly":
+            if as_of is None:
+                as_of = datetime.now().strftime("%Y-%m")
+            run_monthly(as_of=as_of, dry_run=dry_run)
+
+        elif mode == "daily":
+            check_date = datetime.strptime(date, "%Y-%m-%d").date() if date else None
+            run_daily(check_date=check_date, as_of=as_of, dry_run=dry_run)
+
+        else:
+            console.print(f"[red]Unknown mode: {mode}. Use 'monthly' or 'daily'[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Ops run failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@ops_app.command(name="health")
+def ops_health(
+    as_of: str = typer.Option(None, "--as-of", help="Month to check (YYYY-MM)"),
+    date: str = typer.Option(None, "--date", help="Date for price freshness (YYYY-MM-DD)"),
+):
+    """Run system health checks"""
+    from multibagger.ops.health import check_system_health, print_health_report, save_health_report
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        check_date = datetime.strptime(date, "%Y-%m-%d").date() if date else None
+
+        overall_status, checks = check_system_health(as_of=as_of, check_date=check_date)
+        print_health_report(overall_status, checks, as_of)
+
+        output_file = save_health_report(overall_status, checks, as_of)
+        console.print(f"\n[green]✅ Health report saved: {output_file}[/green]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Health check failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@ops_app.command(name="rotate")
+def ops_rotate(
+    keep_months: int = typer.Option(12, "--keep-months", help="Number of recent months to keep"),
+    keep_alert_days: int = typer.Option(90, "--keep-alert-days", help="Number of days to keep alert files"),
+    dry_run: bool = typer.Option(True, "--dry-run/--execute", help="Preview only (default: True)"),
+):
+    """Rotate (prune) old snapshots safely"""
+    from multibagger.ops.rotation import rotate_snapshots, print_rotation_report, save_rotation_report
+
+    try:
+        report = rotate_snapshots(
+            keep_months=keep_months,
+            keep_alert_days=keep_alert_days,
+            dry_run=dry_run
+        )
+
+        print_rotation_report(report)
+
+        output_file = save_rotation_report(report)
+        console.print(f"\n[green]✅ Rotation report saved: {output_file}[/green]")
+
+        if dry_run:
+            console.print("\n[yellow]⚠ DRY-RUN mode. Use --execute to actually delete files.[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Rotation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+app.add_typer(ops_app, name="ops")
+
+
+# ============================================================================
+# Analytics Command Group
+# ============================================================================
+
+analytics_app = typer.Typer(help="Performance analytics and reporting")
+
+
+@analytics_app.command(name="compute")
+def analytics_compute(
+    as_of: str = typer.Option(None, "--as-of", help="End month (YYYY-MM)"),
+    window: int = typer.Option(36, "--window", help="Lookback window in months"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, don't save reports"),
+):
+    """Compute portfolio performance analytics"""
+    from multibagger.analytics import compute_analytics, generate_reports, print_analytics_summary
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        console.print(f"\n[bold cyan]Computing analytics for {as_of} (window: {window} months)[/bold cyan]\n")
+
+        # Compute analytics
+        analytics = compute_analytics(as_of=as_of, window_months=window)
+
+        # Print summary
+        print_analytics_summary(analytics)
+
+        # Generate reports
+        if not dry_run:
+            outputs = generate_reports(analytics)
+
+            console.print("\n[green]Reports generated:[/green]")
+            for report_type, filepath in outputs.items():
+                console.print(f"  - {report_type}: {filepath}")
+
+            console.print(f"\n[green]✅ Analytics computation complete[/green]")
+        else:
+            console.print("\n[yellow]⚠ DRY-RUN mode. Reports not saved.[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]❌ Analytics computation failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+@analytics_app.command(name="report")
+def analytics_report(
+    as_of: str = typer.Option(None, "--as-of", help="Month (YYYY-MM)"),
+):
+    """Show analytics report from saved data"""
+    from multibagger.analytics import print_analytics_summary
+    from pathlib import Path
+    import json
+    from datetime import datetime
+
+    try:
+        if as_of is None:
+            as_of = datetime.now().strftime("%Y-%m")
+
+        # Load saved analytics JSON
+        analytics_file = Path("snapshots") / as_of / "analytics" / f"analytics_{as_of}.json"
+
+        if not analytics_file.exists():
+            console.print(f"[red]Analytics file not found: {analytics_file}[/red]")
+            console.print("[yellow]Run 'analytics compute' first to generate analytics.[/yellow]")
+            raise typer.Exit(1)
+
+        with open(analytics_file) as f:
+            analytics = json.load(f)
+
+        print_analytics_summary(analytics)
+
+    except Exception as e:
+        console.print(f"[red]❌ Failed to load analytics: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
+
+
+app.add_typer(analytics_app, name="analytics")
 
 
 if __name__ == "__main__":
