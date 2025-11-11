@@ -117,10 +117,111 @@ def monthly(
 
 
 @app.command()
-def monitor() -> None:
+def monitor(
+    action: str = typer.Argument("daily", help="Action: daily"),
+    date: str = typer.Option(None, "--date", help="Price date (YYYY-MM-DD), defaults to latest"),
+    as_of: str = typer.Option(None, "--as-of", help="Portfolio run (YYYY-MM), defaults to latest"),
+    output_dir: str = typer.Option("snapshots", "--output-dir", "-o", help="Output directory"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print alerts without writing files"),
+) -> None:
     """Run portfolio monitoring checks"""
-    console.print("[blue]🔍 Portfolio Monitoring[/blue]")
-    console.print("Monitoring system not implemented yet - Phase 5 feature")
+    console.print("[blue]🔍 Portfolio Monitoring[/blue]\n")
+
+    if action != "daily":
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Available actions: daily")
+        raise typer.Exit(1)
+
+    try:
+        from multibagger.monitor import run_daily_monitor
+
+        config = get_config()
+
+        # Run monitor
+        results = run_daily_monitor(
+            config=config,
+            date_str=date,
+            as_of=as_of,
+            output_dir=output_dir,
+            dry_run=dry_run
+        )
+
+        if results['status'] == 'no_positions':
+            console.print(f"[yellow]⚠️  No positions found for monitoring[/yellow]")
+            console.print(f"Portfolio as of: {results['as_of']}")
+            raise typer.Exit(0)
+
+        # Display summary
+        console.print(f"[cyan]Portfolio as of:[/cyan] {results['as_of']}")
+        console.print(f"[cyan]Price date:[/cyan] {results['price_date']}")
+        console.print(f"[cyan]Positions checked:[/cyan] {results['positions_checked']}\n")
+
+        # Display alerts table
+        alerts_df = results['alerts']
+
+        if not alerts_df.empty:
+            # Group by signal
+            signal_counts = alerts_df['signal'].value_counts()
+
+            metrics_table = Table(title="Alert Summary")
+            metrics_table.add_column("Signal", style="yellow")
+            metrics_table.add_column("Count", justify="right", style="red")
+
+            for signal in ['STOP_LOSS', 'THESIS_RISK', 'NEAR_TARGET']:
+                if signal in signal_counts:
+                    metrics_table.add_column = f"{signal}: {signal_counts[signal]}"
+                    metrics_table.add_row(signal, str(signal_counts[signal]))
+
+            console.print(metrics_table)
+            console.print()
+
+            # Display detailed alerts
+            alerts_table = Table(title="Detailed Alerts", show_header=True)
+            alerts_table.add_column("Symbol", style="cyan")
+            alerts_table.add_column("Signal", style="yellow")
+            alerts_table.add_column("Current", justify="right")
+            alerts_table.add_column("Entry", justify="right")
+            alerts_table.add_column("Target", justify="right")
+            alerts_table.add_column("Weight %", justify="right")
+            alerts_table.add_column("Reason", style="dim")
+
+            for _, alert in alerts_df.head(20).iterrows():  # Show first 20
+                alerts_table.add_row(
+                    alert['symbol'],
+                    alert['signal'],
+                    f"${alert['current_price']:.2f}",
+                    f"${alert['entry_price']:.2f}" if alert['entry_price'] else "-",
+                    f"${alert['target_price']:.2f}" if alert['target_price'] else "-",
+                    f"{alert['held_weight_pct']:.1f}",
+                    alert['reason'][:50] + "..." if len(alert['reason']) > 50 else alert['reason']
+                )
+
+            console.print(alerts_table)
+
+            if len(alerts_df) > 20:
+                console.print(f"\n[dim]... and {len(alerts_df) - 20} more alerts[/dim]")
+
+        else:
+            console.print("[green]✅ No alerts - all positions within normal bounds[/green]")
+
+        # Output files
+        if not dry_run and results['output_paths']:
+            console.print(f"\n[dim]Outputs:[/dim]")
+            console.print(f"  Alerts CSV: {results['output_paths']['alerts_csv']}")
+            console.print(f"  Metrics JSON: {results['output_paths']['metrics_json']}")
+        elif dry_run:
+            console.print("\n[yellow]DRY RUN: No files written[/yellow]")
+
+        console.print(f"\n[green]✅ Monitoring complete[/green]")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ File not found: {e}[/red]")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        console.print(f"[red]❌ Monitoring failed: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+        raise typer.Exit(1) from e
 
 
 @app.command()
