@@ -271,6 +271,134 @@ class Factor(Base):
     )
 
 
+class FundamentalTemp(Base):
+    """Ephemeral staging for fundamentals (non-finalists during screening)"""
+
+    __tablename__ = "fundamentals_temp"
+
+    id = Column(Integer, primary_key=True)
+    ticker_id = Column(Integer, nullable=False)  # No FK for speed
+    period_end = Column(Date, nullable=False)
+    report_type = Column(String(10), nullable=False)
+    fiscal_year = Column(Integer, nullable=False)
+    fiscal_quarter = Column(Integer, nullable=True)
+
+    # Income Statement
+    revenue = Column(Numeric(15, 2), nullable=True)
+    gross_profit = Column(Numeric(15, 2), nullable=True)
+    operating_income = Column(Numeric(15, 2), nullable=True)
+    ebit = Column(Numeric(15, 2), nullable=True)
+    ebitda = Column(Numeric(15, 2), nullable=True)
+    net_income = Column(Numeric(15, 2), nullable=True)
+
+    # Balance Sheet
+    total_assets = Column(Numeric(15, 2), nullable=True)
+    current_assets = Column(Numeric(15, 2), nullable=True)
+    non_current_assets = Column(Numeric(15, 2), nullable=True)
+    total_liabilities = Column(Numeric(15, 2), nullable=True)
+    current_liabilities = Column(Numeric(15, 2), nullable=True)
+    long_term_debt = Column(Numeric(15, 2), nullable=True)
+    shareholders_equity = Column(Numeric(15, 2), nullable=True)
+
+    # Cash Flow
+    operating_cash_flow = Column(Numeric(15, 2), nullable=True)
+    investing_cash_flow = Column(Numeric(15, 2), nullable=True)
+    financing_cash_flow = Column(Numeric(15, 2), nullable=True)
+    free_cash_flow = Column(Numeric(15, 2), nullable=True)
+
+    # Per Share Data
+    shares_outstanding = Column(Numeric(12, 2), nullable=True)
+    book_value_per_share = Column(Numeric(8, 4), nullable=True)
+    earnings_per_share = Column(Numeric(8, 4), nullable=True)
+
+    # Metadata
+    currency = Column(String(3), nullable=False, default="USD")
+    filed_date = Column(Date, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    # Constraints (no relationships for temp table)
+    __table_args__ = (
+        Index("ix_fundamental_temp_ticker_period", "ticker_id", "period_end", unique=True),
+        Index("ix_fundamental_temp_period", "period_end"),
+    )
+
+
+class FactorTemp(Base):
+    """Ephemeral staging for factors (non-finalists during screening)"""
+
+    __tablename__ = "factors_temp"
+
+    id = Column(Integer, primary_key=True)
+    ticker_id = Column(Integer, nullable=False)  # No FK for speed
+    as_of_date = Column(Date, nullable=False)
+
+    # Profitability Factors
+    roe = Column(Numeric(8, 4), nullable=True)
+    roa = Column(Numeric(8, 4), nullable=True)
+    roce = Column(Numeric(8, 4), nullable=True)
+    roic = Column(Numeric(8, 4), nullable=True)
+    gross_margin = Column(Numeric(8, 4), nullable=True)
+    operating_margin = Column(Numeric(8, 4), nullable=True)
+    net_margin = Column(Numeric(8, 4), nullable=True)
+
+    # Growth Factors
+    revenue_growth_1y = Column(Numeric(8, 4), nullable=True)
+    revenue_growth_3y = Column(Numeric(8, 4), nullable=True)
+    revenue_growth_5y = Column(Numeric(8, 4), nullable=True)
+    earnings_growth_1y = Column(Numeric(8, 4), nullable=True)
+    earnings_growth_3y = Column(Numeric(8, 4), nullable=True)
+    earnings_growth_5y = Column(Numeric(8, 4), nullable=True)
+
+    # Quality Factors
+    debt_to_equity = Column(Numeric(8, 4), nullable=True)
+    current_ratio = Column(Numeric(8, 4), nullable=True)
+    interest_coverage = Column(Numeric(8, 4), nullable=True)
+    piotroski_score = Column(Integer, nullable=True)
+    altman_z_score = Column(Numeric(8, 4), nullable=True)
+
+    # Valuation Factors
+    pe_ratio = Column(Numeric(8, 4), nullable=True)
+    pb_ratio = Column(Numeric(8, 4), nullable=True)
+    ps_ratio = Column(Numeric(8, 4), nullable=True)
+    peg_ratio = Column(Numeric(8, 4), nullable=True)
+    ev_ebitda = Column(Numeric(8, 4), nullable=True)
+    fcf_yield = Column(Numeric(8, 4), nullable=True)
+
+    # Risk Factors
+    beta = Column(Numeric(8, 4), nullable=True)
+    volatility_1y = Column(Numeric(8, 4), nullable=True)
+    max_drawdown_1y = Column(Numeric(8, 4), nullable=True)
+
+    # Forensic Factors
+    beneish_m_score = Column(Numeric(8, 4), nullable=True)
+    days_sales_outstanding = Column(Numeric(8, 4), nullable=True)
+    asset_quality_index = Column(Numeric(8, 4), nullable=True)
+
+    # Composite Scores
+    quality_score = Column(Numeric(8, 4), nullable=True)
+    growth_score = Column(Numeric(8, 4), nullable=True)
+    value_score = Column(Numeric(8, 4), nullable=True)
+    momentum_score = Column(Numeric(8, 4), nullable=True)
+    overall_score = Column(Numeric(8, 4), nullable=True)
+
+    # Metadata
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    # Constraints (no relationships for temp table)
+    __table_args__ = (
+        Index("ix_factor_temp_ticker_date", "ticker_id", "as_of_date", unique=True),
+        Index("ix_factor_temp_date", "as_of_date"),
+        Index("ix_factor_temp_overall_score", "overall_score"),
+        Index("ix_factor_temp_quality_score", "quality_score"),
+    )
+
+
 class HttpCache(Base):
     """HTTP response cache for API calls"""
 
